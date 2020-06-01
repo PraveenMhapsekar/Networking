@@ -1,0 +1,41 @@
+#1 Addressing
+	- Global Unicast
+		- Publically routable IP
+    - 2000::/3
+	- Link Local (Non routed address)
+		- immediately connected host 
+		- Used to communicate between devices on same n/w segment FE80::/10
+	- Unique Local 
+		- Private IP
+		- FD00::/8
+#2 Multicast
+	- FF00::/8
+	- FF02::1 - All hosts on n/w segment
+  - FF02::2 - All routers on n/w segment
+#3 Anycast Address
+	- Same as multicast, one address for many interfaces, but packet is delived to only on host among many interfaces
+
+#4 ICMPv6
+  - Router Solicitation (RS)
+  - Router Advertisment (RA)
+  - Neighbour Sol
+  - Neighbour Adv
+  - Redirect
+#5 IPv6 Autoconfigured
+  - Statefull
+		- Maunally
+		- DHCP
+	- Statless (SLAAC - StateLess Address Auto Configuration)	
+		- Link Local Address 
+			- only to communicate with local connected i/f
+      - starts with FE80::/10
+			- Derived from MAC address or randomly generated.
+		- Check LinkLocal Address for uniqueness
+		- After above check LinkLocal Address become "preferred"
+		- Send Router Solicitation (RS) using Link Local Address as source address to all routers (FF02::2)
+    - Router will responde with Router Advertisement (RA) message, which will contain
+      - Default gateway
+      - Network ID
+      - Method to get address (DHCP or non DHCP etc)
+    - Combination of Network Id and Link Local address is used to configure i/f address.
+

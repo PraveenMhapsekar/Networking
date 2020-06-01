@@ -1,0 +1,23 @@
+
+#1
+	ver (4)
+	header len (4)
+	TOS (8)
+	Total Len (16)
+
+#2
+  Identification (16)
+  Flags(3)  Res : DF : MF 
+	Fragment offset (13)
+
+#3
+	TTL (8)
+	Proto (8)
+	Checksum (16)
+
+#4 
+	Src Addr
+
+#5
+  Dst Addr
+

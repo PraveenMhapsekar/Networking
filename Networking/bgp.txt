@@ -1,0 +1,82 @@
+#1 AS (Autonomous System) 
+   - Collection of same routers under same administrative domain.
+   - Communication between same AS uses IGP protocols
+     - RIP
+     - IGRP
+     - EGRP
+     - OSPF
+	- To communicate between AS use EGP (Exterior Gateway Protocol)
+		- BGP (Border Gateway Protocol)
+
+#2 IGP Routing
+	- Static Routing
+	- Default Routing
+  - Dynamic Routing
+		RIP, EIGRP, OSPF, ISIS
+
+#3 BGP Features
+	- Standard Protocol
+	- Exterior Gateway Protocol (EGP)
+	- Designed for inter-AS domain routing.
+  - Designed to scale large inter-networking.
+  - Path Vector protocol
+		- AS path information is propogated across AS
+  - Need to configure neighbours manually
+  - BGP uses TCP reliability (TCP port #179)
+
+#4 BGP Loop Prevention Mechanism
+	- If router sses its own AS number in path-information, router will not accept that route.
+
+#5 When to use BGP ?
+	- AS is working as transit AS
+	- AS is connected to multiple AS
+
+#6 When not to use BGP?
+	- if it is single homed AS
+	- Lack of resources in router to maintain BGP information
+	- Limited understaning of BGP rte filtering and path selection process.
+
+#7 Types of ISP connections.
+	1. Single Home Connection
+		- Single exit point
+		- Static routing
+	2. Dual homed connection
+		- Primary/Backup site connectivity to same AS
+		- Load balancing
+		- Either Static of dynamic routing would work
+	3. Multihoming
+		- Connecting to more than one ISP.
+		- ISP level redundancy.
+	4. Dual Multihomed
+		- Multi-AS connectivity with multiple connectivity to each AS
+
+#8 BGP Neighbours
+	- TCP connection to established to neighbour
+	- BGP Neighbours are also called "BGP Peers"
+	- BGP Neighbours are manually configured
+	- IBGP : All routers are in same AS
+	- EBGP : External BGP neighbours, Different AS
+
+# BGP Tables
+	1. BGP Neighbour Table
+	2. BGP Rte Table
+  3. Rte Table 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

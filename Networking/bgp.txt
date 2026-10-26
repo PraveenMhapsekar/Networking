@@ -1,82 +1,127 @@
-#1 AS (Autonomous System) 
-   - Collection of same routers under same administrative domain.
-   - Communication between same AS uses IGP protocols
-     - RIP
-     - IGRP
-     - EGRP
-     - OSPF
-	- To communicate between AS use EGP (Exterior Gateway Protocol)
-		- BGP (Border Gateway Protocol)
+#1 AS (Autonomous System)
+	- A set of routers and prefixes under one administration and one routing policy.
+	- Identified by an AS number. Public numbers come from a registry. 64512-65534 are private. AS numbers are 4 bytes now.
+	- Inside one AS, routers speak an IGP:
+		- RIP
+		- OSPF
+		- IS-IS
+		- EIGRP (Cisco). IGRP is the old Cisco protocol it replaced.
+	- Between ASes, the protocol in use is BGP.
+	- EGP is both the category name (exterior gateway protocol) and an old protocol that BGP replaced. In an interview, "EGP" as a living protocol means BGP.
 
 #2 IGP Routing
-	- Static Routing
-	- Default Routing
-  - Dynamic Routing
-		RIP, EIGRP, OSPF, ISIS
+	- Static routing: an admin installs the route.
+	- Default routing: a static 0.0.0.0/0 (or ::/0) used when no longer match exists.
+	- Dynamic routing: RIP, EIGRP, OSPF, IS-IS.
+	- OSPF and IS-IS are link-state. RIP is distance-vector. EIGRP is advanced distance-vector (DUAL).
+	- An IGP finds a path inside the AS. It does not carry policy between providers.
 
 #3 BGP Features
-	- Standard Protocol
-	- Exterior Gateway Protocol (EGP)
-	- Designed for inter-AS domain routing.
-  - Designed to scale large inter-networking.
-  - Path Vector protocol
-		- AS path information is propogated across AS
-  - Need to configure neighbours manually
-  - BGP uses TCP reliability (TCP port #179)
+	- BGP-4, RFC 4271. It carries prefixes, so it is classless (CIDR).
+	- Exterior gateway protocol, built for routing between ASes and for large scale.
+	- Path-vector protocol. The AS_PATH is sent with the route. That is the loop check and a length the best-path algorithm can use.
+	- Policy matters more than the shortest path. A longer AS path can be the one you choose.
+	- Neighbors are configured by hand. There is no automatic discovery.
+	- Runs on TCP port 179. TCP supplies retransmission and ordering. BGP still has its own keepalive and hold timers.
+	- Cisco defaults: keepalive 60 seconds, hold time 180 seconds.
+	- Updates are incremental. After the first exchange, a peer sends a change, not a periodic full dump.
+	- Administrative distance on Cisco: eBGP 20, iBGP 200. An eBGP route is preferred to the same prefix learned by an IGP. An iBGP route loses to the IGP.
 
-#4 BGP Loop Prevention Mechanism
-	- If router sses its own AS number in path-information, router will not accept that route.
+#4 BGP Loop Prevention
+	- eBGP: if a router sees its own AS number in the AS_PATH, it rejects the route.
+	- iBGP does not prepend its own AS when it advertises to another iBGP peer, so AS_PATH does not stop an iBGP loop.
+	- iBGP split horizon: a route learned from an iBGP peer is not advertised to another iBGP peer.
+	- That rule forces a full iBGP mesh, or a route reflector, or a confederation.
 
-#5 When to use BGP ?
-	- AS is working as transit AS
-	- AS is connected to multiple AS
+#5 When to use BGP
+	- The AS is a transit AS: it carries traffic that is neither sourced nor destined inside it.
+	- The AS connects to more than one provider and needs a policy for which provider to use.
+	- You need to influence how traffic enters or leaves, beyond what a static default can express.
 
-#6 When not to use BGP?
-	- if it is single homed AS
-	- Lack of resources in router to maintain BGP information
-	- Limited understaning of BGP rte filtering and path selection process.
+#6 When not to use BGP
+	- Single-homed AS. A static default toward the ISP is enough, unless the ISP requires BGP.
+	- The router does not have the memory or CPU for the Internet table and the churn.
+	- No one on the team can explain filtering and the best-path order. A bad policy blackholes traffic.
 
-#7 Types of ISP connections.
-	1. Single Home Connection
-		- Single exit point
-		- Static routing
-	2. Dual homed connection
-		- Primary/Backup site connectivity to same AS
-		- Load balancing
-		- Either Static of dynamic routing would work
-	3. Multihoming
-		- Connecting to more than one ISP.
-		- ISP level redundancy.
-	4. Dual Multihomed
-		- Multi-AS connectivity with multiple connectivity to each AS
+#7 Types of ISP connections
+	1. Single-homed
+		- One link to one ISP. One exit.
+		- Static or default routing.
+	2. Dual-homed
+		- Two or more links to the same ISP.
+		- Primary/backup, or load sharing.
+		- Static or dynamic. BGP is optional.
+	3. Multi-homed
+		- Links to two or more ISPs.
+		- Provider failure does not isolate the site. This is the usual reason to run BGP.
+	4. Dual multi-homed
+		- Two or more links to each of two or more ISPs.
+		- Survives both a link failure and an ISP failure.
 
 #8 BGP Neighbours
-	- TCP connection to established to neighbour
-	- BGP Neighbours are also called "BGP Peers"
-	- BGP Neighbours are manually configured
-	- IBGP : All routers are in same AS
-	- EBGP : External BGP neighbours, Different AS
+	- A TCP session to port 179 is brought up with the configured neighbor. Neighbors are also called peers.
+	- iBGP: both peers are in the same AS.
+	- eBGP: the peers are in different ASes.
+	- eBGP assumes the peer is directly connected (TTL 1) unless ebgp-multihop is set.
+	- iBGP is usually peered between loopbacks, so the session survives a link failure. The IGP must be able to reach that loopback.
+	- eBGP sets the next hop to its own address when it advertises a route into the AS.
+	- iBGP leaves the next hop unchanged. If that next hop is the eBGP peer's address, other iBGP routers may not have a route to it. next-hop-self on the edge router rewrites the next hop to itself.
+	- Router ID: configured value, otherwise the highest loopback, otherwise the highest interface address. It is sent in OPEN and used as a tie-break.
 
-# BGP Tables
-	1. BGP Neighbour Table
-	2. BGP Rte Table
-  3. Rte Table 
+#9 BGP Tables
+	1. Neighbor table. Who the peers are and whether the session is established.
+	2. BGP table (Loc-RIB). Every path learned from peers, plus locally originated routes. One prefix can have several paths.
+	3. IP routing table. Only the best path that BGP selected and that actually got installed. The forwarding plane uses this table, not the BGP table.
 
+#10 BGP Session States
+	- Idle: nothing is being attempted. A start event moves it to Connect.
+	- Connect: TCP handshake to port 179 is in progress.
+	- Active: the TCP attempt failed and the router is trying again. Active does not mean the session is up.
+	- OpenSent: TCP is up and an OPEN was sent.
+	- OpenConfirm: OPEN was accepted and the router is waiting for a keepalive.
+	- Established: peers are exchanging updates. This is the only working state.
+	- A NOTIFICATION drops the session back toward Idle and carries a reason code.
 
+#11 BGP Messages
+	- OPEN: version, AS number, hold time, router ID, optional parameters (including MP-BGP address families).
+	- UPDATE: advertise NLRI (prefixes) and withdrawn routes, plus path attributes.
+	- KEEPALIVE: holds the session open when there is no UPDATE.
+	- NOTIFICATION: error, then the session closes.
+	- ROUTE-REFRESH: ask the peer to resend its routes after a policy change, so you do not have to reset the session.
 
+#12 Best Path Selection
+	Cisco compares the valid paths for one prefix in this order and stops at the first difference.
+	1. Highest weight. Cisco only. Local to this router. Not advertised. Default is 0, and a locally originated route gets 32768.
+	2. Highest LOCAL_PREF. Advertised to iBGP peers, so the whole AS uses it for the outbound exit. Default 100.
+	3. Prefer a route this router originated (network/aggregate, then redistribution).
+	4. Shortest AS_PATH.
+	5. Lowest ORIGIN. IGP is better than EGP, which is better than incomplete.
+	6. Lowest MED (MULTI_EXIT_DISC). Advertised to an eBGP peer to suggest which entrance that neighbor should use. Compared among paths from the same neighboring AS unless "always compare MED" is on. Lower wins. Missing MED is treated as 0.
+	7. Prefer eBGP over iBGP.
+	8. Lowest IGP cost to the BGP next hop. This is the hot-potato step.
+	9. Oldest eBGP path, then lowest router ID, then lowest neighbor address. These are tie-breaks.
 
+	Weight, local preference, and AS_PATH prepending are the three knobs interviews expect:
+	- Weight: one router, outbound, higher wins, not shared.
+	- Local preference: the AS, outbound, higher wins, shared over iBGP.
+	- AS_PATH prepend: add your own AS extra times on advertisements out one provider, so the rest of the Internet sees a longer path and prefers your other provider. That influences inbound traffic. It is a hint. The other AS can ignore it.
+	- MED: suggest an entrance to one neighboring AS. Lower wins. Another provider does not have to honor it.
 
+#13 iBGP Scaling
+	- Full mesh: every iBGP router peers with every other. N routers need N*(N-1)/2 sessions. Split horizon is why the mesh exists.
+	- Route reflector: clients peer with the reflector instead of with each other. The reflector relaxes split horizon and reflects client routes. ORIGINATOR_ID and CLUSTER_LIST stop reflection loops.
+	- Confederation: split one AS into private member ASes that speak eBGP between themselves and look like one AS to the outside. Used by large providers.
+	- Synchronization is obsolete and off by default. The old rule was: do not advertise an iBGP-learned route to eBGP until the IGP also knows it. A full mesh plus next-hop reachability replaced it.
 
+#14 Communities
+	- A community is a tag on a route. Peers can match the tag and apply a policy.
+	- well-known: internet (no restriction), no-export (do not advertise outside this AS), no-advertise (do not advertise to any peer).
+	- Providers publish communities so a customer can set local preference, prepend, or blackhole a prefix without asking the provider to edit policy by hand.
 
-
-
-
-
-
-
-
-
-
-
-
-
+#15 What else gets asked
+	- BGP is not "the faster routing protocol." OSPF picks a path from link cost inside one AS. BGP picks a path from policy between ASes.
+	- A route with an unreachable next hop is not a candidate. Fix the IGP or set next-hop-self before debugging best-path order.
+	- Soft reconfiguration or route refresh applies a new inbound policy without tearing down the TCP session. A hard reset withdraws routes and causes churn.
+	- MP-BGP carries other address families in the same session: IPv6 unicast, and VPNv4/VPNv6 for MPLS L3VPN. The session is still TCP 179.
+	- Prefix limits and max-prefix protect a router from a peer that leaks the full table, or leaks it twice.
+	- Summarization at the edge hides internal flaps from the Internet. A flapping customer route should not be withdrawn and re-advertised to the world on every change.

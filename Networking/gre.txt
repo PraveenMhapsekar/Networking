@@ -1,0 +1,34 @@
+#1 What GRE is
+	- Generic Routing Encapsulation, RFC 2784. It wraps a packet in a new IP header plus a small GRE header and sends it to a tunnel endpoint. The underlay only has to route between the two endpoints. It does not have to know the inner addresses.
+	- IP protocol 47. There is no port. A firewall that filters by port has to allow protocol 47, or it will pass TCP and drop the tunnel.
+	- GRE does not encrypt and it does not authenticate. A key field, if set, is an identifier so one pair of endpoints can carry several tunnels. Anyone who can spoof the outer header can send into the tunnel. Confidentiality comes from running GRE over IPsec, which is how site-to-site designs carry routing protocols across an untrusted network.
+
+#2 Header
+	The delivery header is a normal IP header whose protocol is 47 and whose addresses are the tunnel source and the tunnel destination. Then:
+
+	| Flags and version (16) | Protocol type (16) |
+	| Optional checksum, key, sequence number |
+
+	- The minimum GRE header is 4 bytes. The protocol type is an EtherType: 0x0800 when the passenger is IPv4, 0x86DD for IPv6.
+	- The C bit adds a checksum, the K bit adds a 4-byte key, the S bit adds a sequence number. Version is 0 for this GRE. A receiver that does not expect the key drops the packet, so the key has to match on both ends.
+	- Overhead with an IPv4 delivery header and a bare GRE header is 24 bytes. The tunnel MTU is 1476 if the underlay MTU is 1500. An IPv6 delivery header makes the overhead 44 bytes. A key or a checksum adds 4 more.
+	- If the inner packet has DF set and does not fit the tunnel MTU, the tunnel endpoint drops it and sends ICMP fragmentation needed back to the inner source. If that ICMP does not make it, large transfers hang and small pings work. The same black hole as any other MTU miss.
+
+#3 Routing and recursion
+	- The tunnel interface has its own subnet, or it is unnumbered. Routing protocols run on it as if it were a link. OSPF and EIGRP see a neighbor across the tunnel. That is the reason to use GRE rather than a plain IPsec tunnel: a routing hello is multicast, and GRE carries multicast. Plain IPsec traffic selectors are unicast prefixes.
+	- The outer addresses must be reached by a route that does not itself point down the tunnel. If the best route to the tunnel destination is learned through the tunnel, the tunnel comes up, the route is installed, the underlay route is covered, and the tunnel drops. Then the underlay route returns and the cycle repeats. This is recursive routing. The fix is a static route, or a more specific route, for the tunnel endpoints via the physical next hop, and a filter so the IGP across the tunnel does not advertise those endpoints.
+	- Keepalives are an optional probe inside the tunnel. Without them a tunnel interface stays up while the far end is dead, and traffic is dropped into it until the routing protocol times out. A keepalive or BFD gives the interface a chance to go down.
+
+#4 Interview questions
+	- What is the encapsulation, in order?
+		Outer IP header with protocol 47, then a GRE header of at least 4 bytes, then the original packet. The GRE protocol type says whether that passenger is IPv4 or IPv6.
+	- How much MTU does a basic GRE tunnel cost?
+		24 bytes on an IPv4 underlay, so a 1500-byte path leaves an inner MTU of 1476. Forget that and large packets die at the tunnel while pings pass.
+	- Why run a routing protocol over GRE instead of over IPsec alone?
+		GRE carries the multicast hellos. IPsec selectors forward unicast traffic between prefixes. The usual pattern over the internet is GRE for the packets and the hellos, IPsec for the encryption.
+	- What is the key field?
+		A 4-byte identifier that selects which tunnel this packet belongs to. It is not a password. Both ends must be configured with the same key or the packet is dropped.
+	- The tunnel flaps every minute and the endpoints are learned by OSPF. What is happening?
+		Recursive routing. The route to the tunnel destination points back into the tunnel. Pin the endpoint routes to the physical interfaces so they cannot be learned from the overlay.
+	- The tunnel interface is up and traffic vanishes when the far router reboots. Why did the interface stay up?
+		Nothing is probing the far end. The line protocol follows the local configuration. A GRE keepalive or BFD brings the tunnel down when the far end stops answering.

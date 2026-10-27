@@ -1,0 +1,39 @@
+#1 What NAT is
+	- Network Address Translation rewrites IP addresses at the boundary between a private network and a public one. A host numbered in RFC 1918 space cannot be routed on the internet, so the boundary router presents a public address instead.
+	- The table that matters in an interview has two columns people mix up. Inside local is the private address of the host, as seen on the LAN. Inside global is the public address that host is translated to, as seen on the internet.
+	- Outside global is the destination's real public address. Outside local is that destination as seen from the inside, which differs only when the destination is also being translated. Most deployments only rewrite the inside.
+
+#2 Three kinds
+	- Static NAT maps one inside local address to one inside global address, both directions, with no timeout. A server that must be reachable from the outside gets a static entry.
+	- Dynamic NAT maps an inside host to a free address from a public pool for the life of the translation. One public address per host. When the pool is exhausted, the next host is not translated.
+	- PAT, also called overload or NAPT, maps many inside hosts to one public address and tells them apart by the source port. This is what a home and a small office run. The translation entry is (inside IP, inside port, protocol) to (public IP, chosen port). The return packet is matched on the public side and rewritten back.
+	- A destination translation, a port forward, is the other direction: a connection to the public address on a chosen port is rewritten to an inside host and port. Static source NAT and a port forward are how an inside server is published.
+
+#3 What changes in the packet
+	- The IP address, and the port if this is PAT. The IP header checksum is recomputed. The TCP or UDP checksum is recomputed too, because the pseudo-header contains the addresses and the transport header contains the ports. The incremental checksum in the IPv4 notes is the update a translator actually does.
+	- A protocol that writes its own address into the payload breaks unless the translator rewrites that payload too. FTP active mode and SIP are the usual examples. That rewrite is an application-level gateway, and it fails on anything the translator does not understand, including a payload that is encrypted.
+	- ESP has no ports, so a PAT device has nothing to put in its table. NAT traversal encapsulates ESP in UDP port 4500 so there is a port to translate. AH authenticates the IP addresses, so changing them invalidates the authentication. IPsec notes cover both.
+	- Fragments are a problem for PAT because only the first fragment has the port. A translator that cannot reassemble will translate the first fragment and drop or mis-handle the rest.
+
+#4 State and order
+	- The mapping is state. A return packet with no entry is dropped, which is why an outside host cannot open a connection to an inside host that only has PAT. A static entry or a port forward is the exception.
+	- Entries time out. TCP is held while the connection is up and for a while after. UDP entries are short, because UDP has no close. A one-way UDP flow that pauses longer than the timeout disappears, and the next packet creates a new port.
+	- On the way out, the router routes using the inside addresses and then translates the source. On the way in, it translates the destination and then routes using the inside address. Translating in the other order sends the packet at the pre-NAT destination, which is the usual "the route is right and the packet still misses" bug.
+	- Hairpin: an inside host talks to the public address of another inside host. The router has to translate the destination and send the packet back into the LAN. Without hairpin NAT that connection fails, while the same service works from the internet.
+	- Carrier-grade NAT uses 100.64.0.0/10 between the subscriber and the provider's translator. The address is not the subscriber's to announce. It is a second layer of PAT.
+
+#5 Interview questions
+	- What is inside local versus inside global?
+		Inside local is the host's private address on the LAN. Inside global is the public address the outside sees for that host.
+	- What does PAT add that dynamic NAT does not?
+		The port. Many hosts share one public address. The table key is the protocol and the source port, not just the address. Dynamic NAT uses one public address per host and runs out.
+	- Which checksums change, and why?
+		The IP header checksum, because an address changed, and the TCP or UDP checksum, because the pseudo-header contains the addresses and the header contains the ports.
+	- Why can an outside host not open a TCP connection to a PAT inside host?
+		There is no table entry until the inside host speaks first. The unsolicited packet matches nothing and is dropped. A port forward installs the entry in advance.
+	- Why do FTP and SIP need extra help?
+		The address or the port is also written in the payload. Rewriting the header and leaving the payload sends the peer to the private address.
+	- Why does ESP need UDP 4500 through a PAT?
+		ESP has no ports, so the translator cannot tell two sessions apart. Wrapping it in UDP gives it a port. AH has a deeper problem: it authenticates the addresses, so the rewrite fails the check.
+	- A static route to the public address of an inside server never hits the server. Where is the order wrong?
+		Inbound destination translation has to happen before the route lookup. Routing on the public address sends the packet somewhere else, or nowhere, before the rewrite.

@@ -1,0 +1,40 @@
+#1 What DNS is
+	- The directory from a name to an address, and from a few other questions to answers. Applications ask DNS. Routing uses the address DNS returned and never sees the name.
+	- A name is labels separated by dots, each label up to 63 bytes, the whole name up to 255. The trailing dot is the root. Lookups people type usually omit it.
+	- The stub resolver is the library on the host. It asks the recursive resolver configured in DHCP or by hand. The recursive resolver walks the tree and caches the answer. The authoritative server holds the zone and answers from that data.
+
+#2 The walk
+	- The recursive resolver asks a root server for the name. The root answers with the name servers for the top-level domain. The resolver asks one of those, gets the name servers for the domain, and asks one of those. That server is authoritative and returns the record.
+	- A referral includes glue: the address of the name server, carried along with the NS record, so the resolver does not have to look up the name server's name before it can talk to it. Glue breaks a cycle when the name server lives inside the zone it serves.
+	- The resolver caches each record for the TTL the authoritative server set. A later client is answered from the cache until that timer expires. The TTL is in seconds on the record. It has nothing to do with the IP header TTL.
+	- Queries use UDP port 53. The classic UDP limit is 512 bytes. EDNS allows a larger UDP payload. If the answer does not fit, the server sets the truncated bit and the resolver retries over TCP port 53. Zone transfers (AXFR) use TCP from the start.
+
+#3 Records
+	- A is an IPv4 address. AAAA is an IPv6 address. A dual-stack name often has both. The client, or the happy-eyeballs logic in the client, chooses which to try.
+	- CNAME is an alias pointing at another name. The lookup continues at that name. A name that has a CNAME should not also have an A, an MX, or anything else. The zone apex cannot be a CNAME, because the apex already has SOA and NS records. Provider "ALIAS" records are a private workaround for that.
+	- NS delegates a zone. MX names the mail servers, each with a preference. Lower preference is tried first. TXT carries arbitrary text, including SPF and ownership proofs. SRV names a host and a port for a service.
+	- PTR is the reverse, an address back to a name. IPv4 uses in-addr.arpa, reversed octets. IPv6 uses ip6.arpa, reversed nibbles. Mail servers check that the PTR of the connecting address looks like the name the sender claimed.
+	- SOA sits at the apex: the primary name server, a mailbox, a serial, and the timers refresh, retry, expire, and minimum. The serial is what a secondary checks to see if a transfer is due. The usual format is a date plus a counter. It only has to increase.
+
+#4 Answers
+	- An authoritative answer has the AA bit. A cached answer from a recursive resolver does not.
+	- NXDOMAIN means the name does not exist. An empty answer with NOERROR means the name exists and this type does not. SERVFAIL means the resolver could not complete the walk. Those three are different failures.
+	- The query has a 16-bit identifier, and the resolver uses a random source port. The response has to match both. That is what makes a forged reply hard. DNSSEC adds signatures on the records themselves, so a forged response fails validation even if the identifier was guessed. The validator checks the chain from a trust anchor at the root down to the zone.
+
+#5 Interview questions
+	- Who walks the hierarchy, the laptop or the resolver?
+		The recursive resolver. The laptop is a stub and sends one query to the resolver it was given. The resolver asks root, then the TLD, then the authoritative server, and caches the result.
+	- What is the difference between an A record and a CNAME?
+		An A record is an address. A CNAME is another name to look up. A CNAME cannot share its name with other records, so the apex of a zone is an A or AAAA, or a provider-specific alias, not a CNAME.
+	- What are NXDOMAIN, NOERROR with no data, and SERVFAIL?
+		The name is absent. The name exists and the requested type does not. The resolver could not get an answer. Only the first is "this name was never created."
+	- Why does DNS sometimes switch from UDP to TCP?
+		The answer was bigger than the UDP payload, so the server set the truncated bit. The client retries on TCP 53. Zone transfers use TCP anyway.
+	- What is a record TTL?
+		How long a cache may keep that answer, in seconds. It is unrelated to the hop limit in the IP header. Lowering it before a change is how you make a cutover fast. Caches that already fetched the old value wait out the old TTL.
+	- What is glue?
+		The address of a delegated name server, included in the parent zone's referral, so the resolver can reach that server without a separate lookup. It matters most when the name server's name is inside the delegated zone.
+	- What is a PTR used for?
+		The reverse of A and AAAA. Given an address, it returns a name, under in-addr.arpa or ip6.arpa. Receiving mail servers look at it.
+	- What does DNSSEC add?
+		A signature on the records and a chain back to the root. A recursive resolver that validates rejects a response whose signature does not check, including one that matched the query id.

@@ -1,0 +1,36 @@
+#1 What IS-IS is
+	- Intermediate System to Intermediate System, a link-state IGP. It computes a shortest path with Dijkstra, the same idea as OSPF. It was built for ISO CLNS and extended with TLVs so it carries IPv4, IPv6, and MPLS with no new protocol version.
+	- It runs directly on the link, not as an IP protocol. A neighbor forms before either side has an address that the other can route to. OSPF needs IP protocol 89 and a shared subnet. That independence is why a lot of service-provider cores run IS-IS under MPLS.
+	- Inside one level it floods link-state PDUs and runs SPF. Between levels it advertises reachability, the same split OSPF has between an area and the backbone.
+
+#2 Levels and the NET
+	- Level 1 is inside an area. L1 routers know the prefixes in the area and a default toward the nearest L1/L2 router.
+	- Level 2 is the backbone. L2 routers must be contiguous. There is no numbered area 0. The backbone is "every router that is Level 2 and can reach the others."
+	- An L1/L2 router sits in one area and also in the backbone. It is the ABR. It sets the attached bit in its L1 LSP. L1 routers see that bit and install a default toward it.
+	- A router belongs to one area. OSPF areas are configured per interface, so one router can border several areas. In IS-IS the area address is a property of the router.
+	- The NET is the router's own address, and the last byte (the N-selector) is 00. A lab NET looks like 49.0001.0100.0000.0001.00. The 49 is a private AFI. 0001 is the area. 0100.0000.0001 is the 6-byte system id, unique in the domain, often built from a MAC or a padded loopback. Two routers with the same system id corrupt the database.
+
+#3 Adjacency, DIS, and metrics
+	- Packets are IIH (hello), LSP (the link-state PDU), CSNP (a summary of every LSP the sender holds), and PSNP (a request or an ack for specific LSPs). On a LAN the DIS sends a CSNP periodically so everyone can see what they are missing.
+	- Hellos must agree on MTU, authentication, and the level. A padding check refuses a neighbor when the MTU does not match, which stops a silent drop of large LSPs later. States are short: Down, Initializing, Up.
+	- On a LAN a Designated IS is elected. Highest priority, then highest MAC of the system id. There is no backup DIS. A better router takes over as soon as it shows up. OSPF's DR stays until it fails. The DIS exists so the LAN is represented once, and it sends hellos faster than the others so its failure is noticed sooner.
+	- The metric is configured. It is not "reference bandwidth divided by link speed" unless the operator built that policy. Wide metrics are 24 bits. The old narrow metric was 6 bits and tops out too low for a core.
+	- The overload bit tells everyone to compute SPF around this router for transit, while still using the prefixes that originate here. Operators set it while BGP is still converging, so a router that has its IGP up and its BGP empty is not used as a transit hop.
+
+#4 Interview questions
+	- What does IS-IS run on top of?
+		The link itself, as a Layer 2 protocol, using TLVs for the IP prefixes. It does not use IP protocol 89. Neighbors can form before the interfaces have addresses in the same subnet.
+	- What is a NET, and which part has to be unique?
+		The router's network entity title, ending in 00. Area, then a 6-byte system id, then 00. The system id is unique across the domain. The area is shared by the routers in that area.
+	- How is the backbone different from OSPF area 0?
+		The backbone is the connected set of Level 2 routers. It has no area number. An L1/L2 router joins its one area to that backbone and sets the attached bit so L1 routers default toward it.
+	- Where does an IS-IS router sit relative to its area?
+		The whole router is in one area. OSPF puts the area on the interface, so one router routinely borders two areas.
+	- DIS versus OSPF DR?
+		Both represent the LAN. The DIS is preempted by a higher priority as soon as it arrives, and there is no backup DIS. The OSPF DR keeps its role until it fails, and a BDR is already adjacent.
+	- What is the overload bit for?
+		A router sets it so others will not use it as transit while it is still bringing up BGP, or while it is overloaded. Prefixes that originate on it are still reachable.
+	- Two IS-IS neighbors refuse to come up on a link that passes pings. What do you check?
+		MTU, because hellos are padded to the MTU. Then authentication, level (L1 versus L2), and that the system ids differ.
+	- Why do MPLS cores often prefer it to OSPF?
+		One protocol carries IPv4 and IPv6, it does not depend on IP to form the adjacency, and the TLV format absorbed traffic engineering and segment routing. OSPF needed a new version for IPv6.

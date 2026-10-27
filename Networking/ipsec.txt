@@ -1,0 +1,38 @@
+#1 What IPsec is
+	- A set of protocols that authenticate and encrypt IP packets. It is the usual way to build a VPN across a network you do not trust. GRE carries packets. IPsec protects them. They are often used together.
+	- ESP, IP protocol 50, encrypts the payload and can authenticate it. AH, IP protocol 51, authenticates the packet, including parts of the IP header, and does not encrypt anything. New deployments use ESP. AH breaks as soon as a NAT rewrites an address, because that address is covered by the integrity check.
+	- IKE builds the keys. IKEv2 is the current protocol, UDP port 500. IKEv1 is the older one, with a main mode and an aggressive mode. Both ends have to speak the same IKE version.
+
+#2 Tunnel mode and transport mode
+	- Transport mode leaves the original IP header in place and protects what follows. The endpoints of the security association are the endpoints of the traffic. Host to host.
+	- Tunnel mode puts a new outer IP header in front and protects the entire original packet, header included. The outer addresses are the VPN gateways. This is the site-to-site case. The underlay routes the outer addresses and never sees the inner ones.
+	- A traffic selector says which packets enter the tunnel: source prefix, destination prefix, and optionally protocol and ports. The two peers must agree on the selector. A tunnel that shows IKE up and never passes traffic is often a selector that matches on one side and not on the other.
+
+#3 IKE and the security association
+	- IKEv2 starts with IKE_SA_INIT: the peers exchange proposals and Diffie-Hellman material and build an encrypted IKE security association. IKE_AUTH authenticates the peer, with a pre-shared key or a certificate, and builds the first child SA, which is the IPsec SA that carries the data.
+	- A proposal is a set of algorithms: encryption, integrity, and the Diffie-Hellman group. The two sides need one combination in common. A mismatch fails the negotiation in IKE_SA_INIT, before any user traffic.
+	- Each direction has its own SA and its own SPI. The SPI in the ESP header tells the receiver which key to use. Sequence numbers in the ESP header support an anti-replay window. A packet whose number is too old, or a repeat, is dropped.
+	- Lifetimes are finite. CREATE_CHILD_SA builds the next SA before the current one expires, so rekey does not drop the traffic. If rekey fails, the tunnel goes down when the lifetime hits zero and has to negotiate from scratch.
+	- IKEv1 splits this into phase 1 (the IKE SA) and phase 2 (the IPsec SA). Aggressive mode authenticates in fewer messages and exposes the identity. Main mode does not. IKEv2 has no aggressive mode and is the one to run.
+
+#4 NAT traversal
+	- ESP has no ports. A PAT device in the middle cannot tell two ESP sessions apart, and it may drop a protocol it does not know. NAT-T detects the NAT during IKE and then encapsulates ESP in UDP port 4500.
+	- The UDP header gives the PAT device a port to rewrite. The original addresses are still inside the ESP payload, so the decryption at the far end sees the packet IPsec protected.
+	- AH cannot use this trick usefully, because AH's check includes the outer addresses a NAT just changed. That is the practical reason AH disappeared from VPN designs.
+	- A firewall in front of a VPN gateway needs UDP 500 and UDP 4500. Allowing only 500 brings the IKE SA up and then drops the data as soon as NAT-T switches ports.
+
+#5 Interview questions
+	- ESP versus AH?
+		ESP encrypts and can authenticate, and it is protocol 50. AH only authenticates, includes the IP addresses in the check, and is protocol 51. Use ESP.
+	- Tunnel mode versus transport mode?
+		Tunnel mode adds an outer IP header and hides the real endpoints. That is a site-to-site VPN. Transport mode protects the payload and keeps the original header. That is host to host.
+	- What does IKE negotiate before any data flows?
+		An IKE SA, then a child SA: algorithms, keys, and the traffic selector. IKEv2 does this with IKE_SA_INIT and IKE_AUTH on UDP 500. Each direction of the data SA has its own SPI.
+	- IKE is up and the application cannot connect. What do you check?
+		The traffic selectors on the two peers, then whether the data is leaving as ESP or as UDP 4500 and being filtered. A selector mismatch negotiates a tunnel that no packet matches.
+	- Why does NAT force UDP 4500?
+		ESP has no ports for PAT to rewrite, and a changed address would break AH. NAT-T wraps ESP in UDP so the translator has a port, and the protected packet stays inside.
+	- What is the SPI for?
+		The receiver looks up the security association by the SPI in the ESP header and applies the matching key. Without a unique SPI it would not know which tunnel a packet belongs to.
+	- Why pair GRE with IPsec?
+		GRE carries multicast and a routing protocol. IPsec encrypts the GRE packets between the gateways. IPsec alone forwards the unicast prefixes in its selector and does not give the routing protocol a multicast link.

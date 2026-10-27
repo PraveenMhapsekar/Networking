@@ -1,0 +1,55 @@
+#1 What TCP is
+	- A reliable, ordered byte stream between two sockets. IP can drop, reorder, and duplicate. TCP retransmits, puts bytes back in order, and slows down when the path is full.
+	- A connection is a 4-tuple: source IP, source port, destination IP, destination port. Both directions share that connection. A server listens on a port. A client uses an ephemeral port.
+	- It rides in IP as protocol 6. The header is 20 bytes with no options and up to 60 with options.
+
+#2 Header
+	| Source port (16) | Destination port (16) |
+	| Sequence number (32) |
+	| Acknowledgment number (32) |
+	| Data offset (4) | Flags (CWR ECE URG ACK PSH RST SYN FIN) | Window (16) |
+	| Checksum (16) | Urgent pointer (16) |
+	| Options, padded to a 32-bit boundary |
+
+	- Data offset is the header length in 32-bit words, the same idea as IHL. Minimum 5.
+	- Sequence number is the first byte of this segment in the byte stream. The acknowledgment is the next byte the receiver expects, cumulative. A pure ACK consumes no sequence space. A SYN consumes one. A FIN consumes one.
+	- Flags that matter in interviews: SYN opens, ACK acknowledges, FIN closes this direction, RST aborts, PSH asks the receiver to deliver the buffer up to the application. ECE and CWR are ECN.
+	- Window is the receive window, in bytes, of how much more the sender of this segment is willing to accept. With the window scale option it is shifted, up to 14 bits, so the real window can be a gigabyte. The scale is announced in the SYN and stays fixed for the connection.
+	- Checksum covers the TCP header, the data, and a pseudo-header: both IP addresses, a zero byte, protocol 6, and the TCP length. Same one's complement sum as the IP header checksum. A NAT that rewrites an address or a port recomputes it.
+	- MSS is an option in the SYN. It is the largest payload this side will accept, not an IP length. On Ethernet it is 1460 for IPv4 and 1440 for IPv6. Other options in the SYN: SACK permitted, timestamps, window scale.
+
+#3 Opening and closing
+	- Three-way handshake. Client sends SYN with sequence x. Server sends SYN-ACK with sequence y and acknowledgment x+1. Client sends ACK with acknowledgment y+1. The initial sequence numbers need to be hard to guess.
+	- States on the way up: LISTEN on the server, SYN-SENT on the client, SYN-RECEIVED on the server after the SYN, ESTABLISHED on both after the final ACK.
+	- Close is four segments because each direction closes on its own. The side that calls close sends FIN. The peer ACKs it and stays open for data until its application closes too. Then it sends FIN and gets an ACK.
+	- Active closer: FIN-WAIT-1, FIN-WAIT-2, TIME-WAIT. Passive closer: CLOSE-WAIT, LAST-ACK. TIME-WAIT lasts two maximum segment lifetimes, often a minute. It holds the tuple so a delayed segment from this connection cannot be accepted by a new one that reused the ports, and so the final ACK can be resent if it was lost.
+	- RST throws the connection away. No TIME-WAIT, no remaining data. A connect to a port with nothing listening gets a RST. A firewall that wants to be quieter drops the SYN and sends nothing.
+
+#4 Window, retransmission, congestion
+	- The sender may have at most min(receive window, congestion window) bytes in flight. The receive window is the peer saying "my buffer is this full." The congestion window is the sender's guess at what the path can hold.
+	- Cumulative ACK says "I have everything up to here." A hole produces a duplicate ACK of the last contiguous byte. SACK lists the blocks that did arrive past the hole so the sender retransmits only the missing bytes.
+	- Retransmission timeout is based on the smoothed round trip and its variation. It is the last resort. Fast retransmit happens at three duplicate ACKs: resend the missing segment without waiting for the timer.
+	- Slow start grows the congestion window by one MSS per ACK, so it doubles every round trip, until it hits the slow-start threshold. Congestion avoidance then adds about one MSS per round trip.
+	- A timeout is treated as a serious loss: the threshold becomes half the congestion window, the window drops to one MSS, and slow start begins again. Fast recovery, after a triple duplicate ACK, sets the window to about half and keeps going. The path showed it can still deliver ACKs.
+	- Linux uses CUBIC for the growth after the threshold. The names to say are slow start, congestion avoidance, fast retransmit, fast recovery. The algorithm on top of those changes with the operating system.
+	- Nagle holds a small new segment until the previous small one is acknowledged, so tiny writes coalesce. Delayed ACK waits briefly so an ACK can ride with data. Together they can add a visible pause to a chatty protocol. Turning Nagle off is a per-socket choice.
+
+#5 Interview questions
+	- What identifies a TCP connection?
+		Source IP, source port, destination IP, destination port. Protocol is TCP. A server can accept many clients on one listening port because the client port differs.
+	- Walk the handshake, including the sequence numbers.
+		SYN with seq x. SYN-ACK with seq y and ack x+1. ACK with ack y+1. SYN and FIN each consume one sequence number. A later data segment starts at y+1 on the server side.
+	- What is TIME-WAIT, and which side enters it?
+		The side that sent the first FIN. It waits two segment lifetimes so a late packet cannot corrupt a reused tuple and so the last ACK can be retransmitted. A server that closes first pays this, which is why busy servers let the client close.
+	- What is the difference between the receive window and the congestion window?
+		The receive window is advertised by the peer and tracks its buffer. The congestion window is local and tracks the path. The sender is limited by the smaller of the two.
+	- What does a triple duplicate ACK mean?
+		The receiver keeps asking for the same next byte, so a segment was lost and later segments arrived. The sender fast-retransmits that byte. A timeout means even the ACKs stopped.
+	- What does the MSS option mean on Ethernet?
+		The largest TCP payload, announced in the SYN. 1460 for IPv4 and 1440 for IPv6 on a 1500-byte MTU, with no extra headers. It does not include the IP or TCP header.
+	- What does the checksum cover that the IP header checksum does not?
+		The TCP header, the payload, and a pseudo-header of both addresses, the protocol, and the length. A corrupted address fails the TCP checksum.
+	- Why does the window scale have to be in the SYN?
+		Both sides lock it in at setup. A scale announced later would make the window field ambiguous. A shift of 14 turns the 16-bit field into a gigabyte.
+	- A connect hangs, then fails, and a ping to the host works. What is likely?
+		The SYN is filtered, or nothing is answering and the drops are silent. A closed port with no filter returns a RST quickly. A timeout is a filter or a black hole, not a refused port.

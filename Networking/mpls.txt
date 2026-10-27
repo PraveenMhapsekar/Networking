@@ -1,0 +1,98 @@
+#1 What MPLS is
+	- Multiprotocol Label Switching. Forwarding uses a short label, not a longest-prefix match on the IP header, at every hop in the core.
+	- The label sits in a shim between the L2 header and the L3 payload. Ethernet ethertype is 0x8847 (unicast) and 0x8848 (multicast).
+	- A router that pushes or pops a label is a label edge router (LER), usually the PE. A router that only swaps labels is a label switch router (LSR), the P router.
+	- Packets that get the same label and the same treatment are one forwarding equivalence class (FEC). Often one IGP prefix.
+	- The path those packets take is a label switched path (LSP).
+	- Cisco's pre-standard name was tag switching. A tag and a label are the same 32-bit field.
+
+#2 Label (tag) format
+	One label is 32 bits. A stack is several of these, top label first. Forwarding looks only at the top label.
+
+	 0                   1                   2                   3
+	 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|                Label                  | TC  |S|      TTL      |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+	- Label, 20 bits. Values 0 through 15 are reserved. 16 and up are given out by LDP, RSVP, BGP, or segment routing.
+	- TC, 3 bits. Traffic class, used for QoS. This field used to be called EXP. The name changed. The width did not.
+	- S, 1 bit. Bottom of stack. 1 means this is the last label. The bytes after it are the payload (IP, or a pseudowire).
+	- TTL, 8 bits. Decremented at each LSR. At 0 the packet is discarded, same idea as IP TTL.
+	- Reserved values an interviewer expects:
+		- 0  IPv4 Explicit Null. Pop this label and then route the IPv4 packet. The TC bits survive to the egress.
+		- 1  Router Alert. Punt to the control plane. Do not forward it as an ordinary labeled packet.
+		- 2  IPv6 Explicit Null. Same idea as 0, for IPv6.
+		- 3  Implicit Null. This value is never put on the wire. It is the signal "I am the egress, you pop before you send to me."
+		- 4 through 15 are reserved.
+
+#3 Push, swap, pop
+	- Push: the ingress PE adds a label. This is the head of the LSP.
+	- Swap: a transit P replaces the top label with the label the next hop expects.
+	- Pop: remove the top label. The egress does this, or the hop just before the egress does it (PHP).
+	- Two tables. The LIB holds every label learned from neighbors. The LFIB is the forwarding table: incoming label, operation, outgoing label, next hop. The data plane uses the LFIB.
+
+#4 Penultimate hop popping
+	- Without PHP the egress pops the label and then does an IP lookup. That is two lookups on the busiest router.
+	- The egress advertises implicit null (label 3) for prefixes it owns. The penultimate LSR sees label 3, pops, and sends a plain IP packet. The egress does one IP lookup.
+	- Implicit null throws away the label, so the TC bits on that label are gone. If the egress still needs those QoS bits, the egress advertises explicit null (0 for IPv4, 2 for IPv6). The penultimate hop swaps to 0 instead of popping. The egress pops 0 and still sees TC.
+	- PHP applies to the top label. In a VPN the transport label is popped one hop early. The VPN label underneath is still there when the packet reaches the egress PE.
+
+#5 How labels are handed out
+	- LDP (Label Distribution Protocol). Follows the IGP shortest path. It does not build its own topology and it does not reserve bandwidth.
+		- Discovery: UDP port 646, hello to 224.0.0.2.
+		- Session: TCP port 646, between router IDs. The IGP must be able to reach that router ID, usually a loopback.
+		- Downstream unsolicited is the normal mode. Each router advertises a label for each of its IGP prefixes without being asked.
+		- A router uses the label advertised by its IGP next hop for that prefix. If LDP and the IGP disagree on the next hop, the LSP breaks. This is the usual "MPLS is up but this prefix is unlabeled" bug.
+	- RSVP-TE. Builds an LSP that is not required to be the IGP shortest path. PATH goes toward the tail, RESV comes back and hands out labels hop by hop (downstream on demand). It can reserve bandwidth and pin the path.
+	- BGP. In a VPN the PE advertises the VPN label in MP-BGP. The transport label is still LDP, RSVP, or segment routing.
+	- Segment routing (SR-MPLS). The IGP advertises segment IDs. A SID is encoded as an MPLS label. A path is an ordered label stack the ingress pushes. No LDP session is required. TI-LFA is the fast-reroute story.
+
+#6 TTL
+	- Uniform mode: the IP TTL is copied into the label at the ingress and copied back at the egress. A traceroute sees the P routers.
+	- Pipe mode: the core has its own TTL. The customer IP TTL is not decremented once per core hop. A traceroute from the customer does not see the P routers.
+	- Short-pipe is pipe mode, except the penultimate hop's pop is visible. Know the names. Pipe versus uniform is the question.
+
+#7 MPLS L3VPN
+	- Each customer has a VRF on the PE. The VRF has its own routing table. Customer routes are not in the global table.
+	- The PE advertises customer prefixes in MP-BGP as VPNv4 (or VPNv6). The address is RD plus the prefix. The advertisement carries a VPN label and one or more route targets.
+	- RD (route distinguisher) makes the same customer prefix unique if two VPNs both use 10.0.0.0/8. It does not decide who receives the route.
+	- RT (route target) is the policy. Export RT stamps the route. Import RT selects which routes enter a VRF. This is the question people swap with RD.
+	- On the wire the label stack is two deep. Top: transport label, swapped by each P, gets the packet to the egress PE. Bottom: VPN label, S bit set, tells the egress PE which VRF to deliver into.
+	- P routers do not know VPNs and do not hold customer routes. They only swap the transport label.
+	- PE-CE routing is independent: static, OSPF, EIGRP, or BGP. That session is not MPLS.
+
+#8 L2VPN, only the names
+	- Pseudowire (VPWS): point-to-point L2 over MPLS. Stack is transport label plus VC label.
+	- VPLS: a LAN across several PEs. Customer MAC learning is on the PE. Scaling is the complaint.
+	- EVPN: BGP advertises MAC and IP routes. The data plane can be MPLS or VXLAN. This is what replaced VPLS in new designs.
+
+#9 Interview questions
+	- What is the width of an MPLS label?
+		20 bits. The whole shim is 32 bits: 20 label, 3 TC, 1 bottom-of-stack, 8 TTL.
+	- Which label does a transit router look at?
+		Only the top label. The S bit tells it whether another label follows.
+	- What is label 3, and is it ever forwarded?
+		Implicit null. It is a signal to the previous hop to pop. It is not transmitted.
+	- Why does explicit null exist if implicit null already pops?
+		Explicit null (0 or 2) keeps the TC bits so the egress can still see the QoS marking.
+	- What is a FEC?
+		The set of packets that share one label and one forwarding treatment. A typical FEC is an IGP prefix.
+	- LDP follows which path?
+		The IGP best path. LDP cannot steer traffic onto a longer path. RSVP-TE or a segment-routing policy can.
+	- Why does an L3VPN packet carry two labels?
+		The outer label is transport, to the egress PE. The inner label is the VPN label, so the egress PE can pick the VRF. P routers never look at the inner label.
+	- How is RD different from RT?
+		RD makes a prefix unique in MP-BGP. RT decides which VRF imports it. Changing the RD does not change who receives the route.
+	- What does PHP change on an L3VPN packet?
+		The penultimate P pops the transport label. The egress PE receives a packet whose top label is the VPN label.
+	- A traceroute from a customer does not show the P routers. Which TTL mode is that?
+		Pipe mode. Uniform mode would show the core hops.
+	- The IGP path is up but the prefix is unlabeled. What do you check first?
+		That LDP is sessioned with the IGP next hop, and that this router installed the label advertised by that next hop. A route to the peer's router ID is the usual missing piece.
+	- Where does the VPN label come from?
+		MP-BGP, from the egress PE. LDP does not allocate VPN labels.
+	- What is the S bit for?
+		Bottom of stack. The LSR that pops the last label (S = 1) must hand the remaining bytes to IP, or to the pseudowire, instead of doing another label lookup.
+	- Name the three operations.
+		Push at the ingress, swap in the core, pop at the egress or one hop before it.

@@ -1,41 +1,161 @@
-#1 Addressing
-	- Global Unicast
-		- Publically routable IP
-    - 2000::/3
-	- Link Local (Non routed address)
-		- immediately connected host 
-		- Used to communicate between devices on same n/w segment FE80::/10
-	- Unique Local 
-		- Private IP
-		- FD00::/8
-#2 Multicast
-	- FF00::/8
-	- FF02::1 - All hosts on n/w segment
-  - FF02::2 - All routers on n/w segment
-#3 Anycast Address
-	- Same as multicast, one address for many interfaces, but packet is delived to only on host among many interfaces
+#1 What IPv6 is
+	- A connectionless, best-effort datagram protocol, same job as IPv4, with 128-bit addresses.
+	- The base header is fixed at 40 bytes. A router can forward from that header alone. Options moved into extension headers that follow it.
+	- The base header has no checksum and no fragment fields. Fragmentation is done by the source. A router that cannot fit the packet drops it.
+	- There is no broadcast. A packet for every host on the link goes to the all-nodes multicast address.
 
-#4 ICMPv6
-  - Router Solicitation (RS)
-  - Router Advertisment (RA)
-  - Neighbour Sol
-  - Neighbour Adv
-  - Redirect
-#5 IPv6 Autoconfigured
-  - Statefull
-		- Maunally
-		- DHCP
-	- Statless (SLAAC - StateLess Address Auto Configuration)	
-		- Link Local Address 
-			- only to communicate with local connected i/f
-      - starts with FE80::/10
-			- Derived from MAC address or randomly generated.
-		- Check LinkLocal Address for uniqueness
-		- After above check LinkLocal Address become "preferred"
-		- Send Router Solicitation (RS) using Link Local Address as source address to all routers (FF02::2)
-    - Router will responde with Router Advertisement (RA) message, which will contain
-      - Default gateway
-      - Network ID
-      - Method to get address (DHCP or non DHCP etc)
-    - Combination of Network Id and Link Local address is used to configure i/f address.
+#2 Header format
+	Always 40 bytes. Multi-byte fields are big-endian. EtherType on Ethernet is 0x86DD.
 
+	 0                   1                   2                   3
+	 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|Version| Traffic Class |           Flow Label                  |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|         Payload Length        |  Next Header  |   Hop Limit   |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|                                                               |
+	+                                                               +
+	|                         Source Address                        |
+	+                          (128 bits)                           +
+	|                                                               |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|                                                               |
+	+                                                               +
+	|                      Destination Address                      |
+	+                          (128 bits)                           +
+	|                                                               |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+	- Version, 4 bits. Value 6.
+	- Traffic Class, 8 bits. The same split as the IPv4 TOS byte: 6 bits of DSCP and 2 bits of ECN. EF is still 46. ECN 11 still means congestion experienced.
+	- Flow Label, 20 bits. The source marks one flow so a router can hash or schedule it without reading the port numbers. Those ports may be hidden by an extension header or by encryption. Zero means the source did not set a label. A router leaves a non-zero label as it found it.
+	- Payload Length, 16 bits. Bytes after the 40-byte header. See #3.
+	- Next Header, 8 bits. What follows this header. The same registry as the IPv4 protocol field, with different users: 6 TCP, 17 UDP, 58 ICMPv6, 0 Hop-by-Hop, 43 Routing, 44 Fragment, 50 ESP, 51 AH, 59 no next header, 60 Destination Options. A value of 44 means the transport header is further along the chain.
+	- Hop Limit, 8 bits. Remaining hops. Each router subtracts one. A router that would make it 0 drops the packet and sends ICMPv6 Time Exceeded (type 3, code 0). Traceroute uses this. It is a hop count. The IPv4 name TTL promised seconds and never was.
+	- Source and destination, 128 bits each. Forwarding uses the destination. The source is who ICMP errors go back to.
+
+#3 Payload length
+	- Payload length counts everything after the fixed header: extension headers and the upper-layer packet. The 40-byte header is outside the count.
+	- The size on the wire is 40 plus payload length. That sum is the IPv4 total length of this datagram. IPv4 folded the header into the length field. IPv6 keeps the header size out of it because the header size never changes.
+	- On Ethernet the MTU is still 1500, so payload length is at most 1460 when there is no extension header. TCP MSS on that link is 1440: 1500 minus 40 bytes of IPv6 minus 20 bytes of TCP. The IPv4 MSS on the same link is 1460. The 20-byte growth of the IP header is the whole difference.
+	- A short frame is still padded by Ethernet up to 64 bytes. The pad is not part of the datagram. Stop at 40 plus payload length.
+	- The field is 16 bits, so it tops out at 65535. A larger packet sets payload length to 0 and carries the real length in a Jumbo Payload hop-by-hop option. That length is still the bytes after the 40-byte header, and it is greater than 65535. Rare. Payload length 0 with next header 59 is a packet that genuinely has no payload.
+	- Minimum link MTU is 1280. The largest payload on that minimum link, with no extension header, is 1240.
+
+#4 Fragmentation
+	- The source fragments. A router never does. When the packet is larger than the next-link MTU, the router drops it and sends ICMPv6 Packet Too Big (type 2, code 0) carrying that MTU. The source then sends a smaller packet, or fragments to the path MTU it has learned.
+	- There is no DF flag. Every packet is "do not fragment in the path." Filtering Packet Too Big produces the same black hole as filtering IPv4 "fragmentation needed," and nothing downstream will split the packet to save the flow.
+	- The fragment fields live in an extension header, next header value 44, not in the base header. The header is 8 bytes:
+
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|  Next Header  |   Reserved    |      Fragment Offset    |Res|M|
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|                         Identification                        |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+	- Next Header here is the type of the header that was fragmented, usually 6 or 17. The base header's Next Header is 44 on every fragment.
+	- Fragment Offset, 13 bits, in 8-byte units, same unit as IPv4. The two Res bits and the Reserved byte stay 0. M means more fragments follow.
+	- Identification is 32 bits. IPv4 used 16. Every fragment of one datagram carries the same value. The source must not reuse it for the same source and destination while an earlier datagram might still be waiting.
+	- The unfragmentable part is copied onto every fragment: the base header, the Hop-by-Hop header if present, and the Routing header and the Destination Options that sit with it. The fragmentable part is the rest, which is where the TCP or UDP header is. Each fragment packet is: unfragmentable part, then this fragment header, then a slice of the fragmentable part.
+	- Payload length on a fragment is the length of that fragment after its own 40-byte header, so it includes the 8-byte fragment header. M is 0 on the last slice. A packet is a fragment when a fragment header is present.
+	- Reassembly is at the destination. The key is source, destination, and the 32-bit identification. IPv4 also keyed on the protocol field. The destination waits until offset 0 through the last byte is present. Timeout is 60 seconds. If the offset-0 fragment arrived, the destination then sends ICMPv6 Time Exceeded type 3 code 1.
+	- A node must be able to reassemble at least 1500 bytes. Every link must carry 1280 or provide its own fragmentation below IPv6 so that IPv6 still sees 1280.
+	- Only the offset-0 fragment contains the transport header. Later fragments start mid-payload, so a filter matching ports cannot classify them.
+	- Worked example. Original packet: 40-byte header and 2000 bytes of payload, no extension header, so 2040 bytes on the wire. Path MTU is 1500. Room for data in one fragment is 1500 - 40 - 8 = 1452, rounded down to a multiple of 8, which is 1448.
+		Fragment 0: offset 0,   M 1, payload length 1456 (8 + 1448), on the wire 1496. Bytes 0 through 1447 of the original payload. The TCP header is here.
+		Fragment 1: offset 181, M 0, payload length 560 (8 + 552), on the wire 600. Bytes 1448 through 1999. 181 * 8 = 1448.
+		1448 + 552 = 2000. Same 32-bit identification on both. Base Next Header is 44. The fragment header's Next Header is 6.
+
+#5 Checksum
+	- The base header has no checksum field. Hop Limit changes at every router, so a header checksum would be rewritten at every hop, and it still would not cover the payload. Each link is assumed to have its own CRC for the hop it carries.
+	- End-to-end coverage moved up. TCP, UDP, and ICMPv6 each checksum their own packet plus a pseudo-header. The pseudo-header is 16 bytes of source, 16 bytes of destination, 4 bytes of upper-layer length, 3 zero bytes, and 1 byte of next header. A corrupted address fails the transport checksum, because the addresses are inside that sum.
+	- The sum itself is the same one's complement sum as IPv4. Add 16-bit words with end-around carry, store the bitwise NOT. The receiver includes the checksum field and expects 0xffff.
+	- UDP checksum is required. In IPv4 it may be zero, meaning "no checksum." In IPv6 a zero UDP checksum is illegal and the receiver discards it. If the computed sum is 0, the sender stores 0xffff.
+	- ICMPv6 checksum is required too, and it includes the pseudo-header. IPv4 ICMP checksum did not cover the IP addresses.
+	- NAT that rewrites an address, or a translator, must update the transport checksum. The incremental update is the same formula as IPv4: fold ~old + ~old field + new field back into the checksum. There is no IP header checksum to fix, because that field does not exist.
+
+#6 Extension headers
+	- Each header says what follows it. The chain ends at the upper layer, or at next header 59.
+	- Recommended order: Hop-by-Hop (0), Destination Options (60) for the first destination, Routing (43), Fragment (44), AH (51), ESP (50), Destination Options (60) for the final destination, then TCP or UDP or ICMPv6.
+	- Hop-by-Hop is the one every router is expected to read, and it must be the first extension header. The Jumbo Payload option lives here. The others are for the destination, apart from the Routing header, which each hop listed in it processes.
+	- Except for the fragment header, an extension header starts with Next Header and Hdr Ext Len. That length is in 8-byte units, not counting the first 8 bytes. A length of 0 means the header is 8 bytes. The fragment header is always 8 bytes and has no length field.
+	- Routers forward on the base header. A firewall that wants the TCP ports has to walk the chain. Long chains of extension headers are a known way to push the transport header past what a box will parse, so some networks rate-limit or drop them. A non-first fragment has the same blind spot as in IPv4: the ports are not in that packet.
+
+#7 Addressing
+	- 128 bits, written as eight hex groups. Leading zeros in a group can be dropped. One run of zero groups can be written as ::, and only one. 2001:0db8:0000:0000:0000:0000:0000:0001 is 2001:db8::1.
+	- Global unicast, 2000::/3. Routable on the public internet. A typical subnet is a /64.
+	- Link-local, FE80::/10. The next 54 bits are zero, so addresses in use look like FE80::/64. Required on every IPv6 interface. Used to talk to hosts on the same link, and as the source of Router Solicitation, before a global address exists. A router does not forward them. The same FE80::1 can exist on every link, so the host writes a zone on the end (fe80::1%eth0). The zone is local syntax. It is not in the packet.
+	- Unique local, FC00::/7. Private, same role as RFC 1918. FD00::/8 is the half you assign yourself: the next 40 bits are a random global id, then a 16-bit subnet, then the 64-bit interface id. FC00::/8 is the other half and is not for local assignment.
+	- Loopback is ::1. The unspecified address is ::. A host uses :: as the source while it is still asking whether its new address is free. :: is never a destination and never forwarded.
+	- IPv4-mapped, ::ffff:0:0/96, written ::ffff:192.0.2.1. A dual-stack socket uses this to name an IPv4 peer. It is not a global IPv6 route.
+	- An interface id is 64 bits on a normal subnet, which is why the subnet is a /64. SLAAC needs those 64 bits. A point-to-point link between routers is often a /127, so a neighbor scan of the subnet is two addresses. A loopback is a /128.
+	- EUI-64 builds the interface id from a MAC. Split the 48-bit MAC, insert FF:FE in the middle, and invert the universal/local bit, which is bit 1 of the first byte (the 0x02 bit). MAC 00:11:22:33:44:55 becomes 0211:22ff:fe33:4455. An address containing ff:fe was usually built this way. Current hosts prefer a random interface id (temporary, or stable per prefix) so the MAC is not sitting in the address.
+
+#8 Multicast and anycast
+	- Multicast is FF00::/8. The third nibble is the scope: 1 interface, 2 link, 5 site, 8 organization, E global. FF02:: means link scope.
+	- FF02::1 is all nodes on the link. FF02::2 is all routers on the link. FF02::1:2 is all DHCPv6 servers and relay agents. OSPFv3 uses FF02::5 and FF02::6.
+	- Solicited-node, FF02::1:FF00:0/104. Take the low 24 bits of the unicast address and append them. 2001:db8::a3:4b5c maps to FF02::1:FFa3:4b5c. Neighbor Solicitation goes here, so one address resolution wakes a few hosts instead of every host on the link. On Ethernet the multicast MAC is 33:33 plus the low 32 bits of the IPv6 multicast address.
+	- Group membership is MLD, which is ICMPv6. IPv4 used IGMP, a separate protocol.
+	- Anycast is a unicast address configured on more than one node. The routing table delivers the packet to the nearest one. A multicast address delivers a copy to every member. The subnet-router anycast address is the subnet prefix with an interface id of all zeros. An anycast address is not used as a source address.
+
+#9 ICMPv6 and neighbor discovery
+	- ICMPv6 is next header 58. It carries errors and it carries Neighbor Discovery. Neighbor Discovery replaces ARP, router discovery, and redirect.
+	- Error messages used constantly: Destination Unreachable (type 1), Packet Too Big (type 2), Time Exceeded (type 3), Parameter Problem (type 4). Echo Request and Echo Reply are 128 and 129.
+	- Neighbor Discovery: Router Solicitation 133, Router Advertisement 134, Neighbor Solicitation 135, Neighbor Advertisement 136, Redirect 137.
+	- Address resolution: the host sends Neighbor Solicitation for the target's solicited-node multicast, naming the target address. The owner answers with Neighbor Advertisement and its link-layer address. The neighbor cache is the ARP table. Entries move through incomplete, reachable, stale, delay, and probe.
+	- Duplicate Address Detection: before using a new address, the host sends Neighbor Solicitation for it, with source ::. Silence means the address is unique. A Neighbor Advertisement in reply means someone already has it, and the host drops the address. The reply goes to FF02::1, because the solicitor has no address yet.
+	- Every Neighbor Discovery packet is sent with Hop Limit 255. The receiver drops one that arrives with any other hop limit. An off-link sender cannot forge that, because a router would have decremented it.
+	- Redirect: a router tells a host that a better next hop is on the same link.
+
+#10 Autoconfiguration
+	- Every interface forms a link-local address first: FE80::/64 plus a 64-bit interface id from EUI-64 or from a random value. It runs Duplicate Address Detection. On success the address becomes preferred. This needs no router. It only reaches the local link.
+	- The host then sends Router Solicitation from that link-local address to FF02::2. Routers also send Router Advertisements to FF02::1 on their own.
+	- The advertisement carries the default router, the MTU, the hop limit, and one or more prefixes. Each prefix has a valid lifetime, a preferred lifetime, an on-link flag (L), and an autonomous flag (A). The M and O flags sit on the advertisement itself.
+	- Stateless, SLAAC. A is set. The host builds a global address as that prefix followed by the same 64-bit interface id it already used. The FE80:: prefix is replaced by the advertised prefix. The full link-local address is not appended to the prefix. The new global address gets its own Duplicate Address Detection. Preferred lifetime is how long the host may start new connections from it. Valid lifetime is how long the address may still be used at all. When the preferred timer hits zero the address is deprecated.
+	- Stateful. M is set. The host asks DHCPv6 for the address. DHCPv6 listens on UDP 547, the client uses 546, and the servers sit at FF02::1:2. DHCPv6 does not give the default gateway. The gateway comes from the Router Advertisement. That split surprises people who know IPv4 DHCP.
+	- O set, M clear: the address comes from SLAAC, and DHCPv6 is used for the other parameters, usually DNS. The advertisement can also carry DNS directly (RDNSS) and then DHCPv6 is unnecessary.
+	- A static address is configured by hand. It is neither SLAAC nor DHCPv6.
+	- Common deployment: A set, O set, M clear. The host invents its address and learns DNS from DHCPv6 or from the advertisement. The default route is the router that sent the advertisement.
+
+#11 Interview questions
+	- How big is the IPv6 header, and what did IPv4 keep in the header that this one dropped?
+		40 bytes, always. Gone from the base header: IHL, the header checksum, identification, the fragment flags and offset, and options. Options and fragmentation come back as extension headers when they are needed.
+	- What does payload length include?
+		The bytes after the 40-byte header, extension headers included. Add 40 to compare it with an IPv4 total length. Ethernet pad is outside it.
+	- What is the TCP MSS on Ethernet?
+		1440. MTU 1500, minus 40 of IPv6, minus 20 of TCP. The IPv4 figure on the same wire is 1460.
+	- Who fragments an IPv6 packet?
+		The source. A router that cannot fit the packet drops it and sends ICMPv6 Packet Too Big, type 2, with the next-link MTU. There is no DF bit, because a router is not allowed to fragment.
+	- What is the minimum MTU?
+		1280 on every link. A node must reassemble at least 1500. IPv4's matching numbers are 68 to forward and 576 to accept.
+	- Where are the fragment fields, and how wide is the identification?
+		An 8-byte extension header, next header 44. Offset is 13 bits in 8-byte units, plus an M flag. Identification is 32 bits. IPv4's identification is 16 and lives in the base header.
+	- A 2040-byte packet (40 plus 2000 of payload) meets an MTU of 1500. What do the fragments look like?
+		Two fragments, same identification. First: offset 0, M set, payload length 1456, 1448 bytes of the original payload, TCP header in this one. Second: offset 181, M clear, payload length 560, the remaining 552 bytes. 181 * 8 is 1448.
+	- What is the reassembly key?
+		Source address, destination address, and the 32-bit identification. The destination reassembles. Routers forward fragments as ordinary packets.
+	- Why is there no header checksum?
+		Hop Limit changes at every router, so the checksum would be rewritten at every hop and would still miss the payload. The link CRC covers the hop. TCP, UDP, and ICMPv6 cover the addresses through the pseudo-header.
+	- Is the UDP checksum optional?
+		It is required. A zero checksum is discarded. IPv4 allowed zero to mean "not computed." If the IPv6 sum comes out 0, the sender stores ffff.
+	- What is in the pseudo-header?
+		Both 128-bit addresses, the upper-layer length, three zero bytes, and the next header value. Then the upper-layer packet. Same one's complement sum as IPv4.
+	- Name the next header values you actually need.
+		6 TCP, 17 UDP, 58 ICMPv6, 44 Fragment, 0 Hop-by-Hop, 43 Routing, 59 none. ICMPv6 is 58. IPv4 ICMP was protocol 1.
+	- Which extension header does every router read?
+		Hop-by-Hop, and only if it is first. The fragment header is for the destination. A firewall walks the chain to find the ports, and a later fragment does not contain them.
+	- What replaced ARP?
+		Neighbor Solicitation and Neighbor Advertisement, sent to the solicited-node multicast of the target. FF02::1:FF plus the low 24 bits of the unicast address. The neighbor cache is the ARP table.
+	- Why is Neighbor Discovery sent with hop limit 255?
+		The receiver drops any other value. A router would have decremented a packet that came from off the link, so an off-link host cannot forge a Router Advertisement or a Neighbor Advertisement.
+	- Give the ranges.
+		Global 2000::/3. Link-local FE80::/10, used as FE80::/64. Unique local FC00::/7, and FD00::/8 is the locally assigned half. Multicast FF00::/8. Loopback ::1. Unspecified ::.
+	- How does SLAAC build the global address?
+		Prefix from the Router Advertisement, then the 64-bit interface id. The FE80:: bits are replaced. The host does not paste the prefix onto the whole link-local address. The A flag on the prefix allows this. The address still has to pass Duplicate Address Detection.
+	- What do M and O mean, and where does the default gateway come from?
+		M means DHCPv6 assigns the address. O means DHCPv6 assigns other parameters such as DNS. The default gateway comes from the Router Advertisement in either case. DHCPv6 does not hand out the gateway.
+	- Anycast versus multicast?
+		Anycast is one unicast address on several nodes, and routing delivers to the nearest. Multicast is FF00::/8, and every joined member receives a copy. FF02::1 is all nodes on the link, which is how IPv6 gets along without broadcast.
+	- A large transfer hangs and a small ping works. What do you look at?
+		ICMPv6 Packet Too Big is filtered, or the tunnel MTU is under 1280 plus the encapsulation. The source is still sending 1500-byte packets, and no router will fragment them.

@@ -1,0 +1,49 @@
+#1 What spanning tree does
+	- Ethernet has no hop count. A loop floods a broadcast until the link is full. Spanning tree blocks ports until the remaining active topology is a tree: one path between any two bridges.
+	- 802.1D is the original STP. 802.1w is Rapid STP. 802.1s is MST, several VLANs sharing one tree. Per-VLAN trees (PVST, Rapid PVST) are the Cisco campus default. The VLAN notes cover which VLANs share a tree. This page is how one tree is built.
+	- The bridge ID is a priority plus a MAC address. Lower ID wins. Priority defaults to 32768 and is configured in steps of 4096, because 12 bits of the field carry the VLAN id in a per-VLAN tree. Set the priority so the root is the switch you chose, usually the core, and set a second switch a step worse so a failure has a known successor.
+
+#2 How the tree is chosen
+	- The switch with the lowest bridge ID is the root. Everyone else computes a path cost to it.
+	- Port cost is based on speed. The numbers people memorize, Cisco's long method: 100 for 10 Mbps, 19 for 100 Mbps, 4 for 1 Gbps, 2 for 10 Gbps. The path cost is the sum toward the root. Lower wins.
+	- Root port: the port on this switch with the best path to the root. One per non-root switch.
+	- Designated port: the port on a segment that has the best path to the root. It forwards for that segment. The other end, if it is not that segment's designated port and not a root port, does not forward.
+	- A tie breaks by lowest sender bridge ID, then lowest sender port ID.
+	- BPDUs carry the root ID, the cost to the root, the sender's bridge ID, the port ID, and the timers. Hello is 2 seconds, max age is 20, forward delay is 15.
+
+#3 States and timers
+	- STP states: blocking, listening, learning, forwarding. Listening and learning each wait one forward delay, so a port can take 30 seconds to forward, and a topology change can take max age plus those 30 seconds, about 50 seconds.
+	- Blocking still receives BPDUs. It does not learn MACs and does not forward frames. Listening is the transition. Learning installs MAC addresses and still does not forward. Forwarding does both.
+	- A topology change notification makes the switches age out MAC entries in forward-delay seconds instead of the usual 300, so a moved host is relearned. Without that, traffic follows a stale MAC entry into a blocked path.
+
+#4 Rapid STP
+	- States collapse to discarding, learning, and forwarding. Roles are root, designated, alternate, and backup. An alternate port is a second path to the root, already known, sitting in discarding. A backup port is a second connection to the same segment on the same switch.
+	- Every switch sends BPDUs every hello time. Three missed hellos and the neighbor is declared down. STP waited for max age because only the root originated BPDUs and the others relayed them.
+	- On a point-to-point link a designated port sends a proposal. The downstream switch agrees with the port that is its root port and blocks its other ports. Both ends go forwarding without waiting for the forward delay. This is the handshake that makes RSTP fast.
+	- An edge port, called PortFast on access ports, goes forwarding immediately. It is for a host. A switch plugged into an edge port will cause a loop unless BPDU guard is on.
+
+#5 The guards
+	- BPDU guard: an edge port that receives a BPDU is shut down (err-disabled). This is the control against a user plugging in a switch.
+	- Root guard: a port that would make this switch change its root is held down. Put it on the edge of the tree so a rogue bridge ID cannot steal the root.
+	- Loop guard: a port that stops hearing BPDUs is held in a loop-inconsistent state instead of being allowed to forward. A unidirectional fiber would otherwise open the blocked port and build a loop.
+	- BPDU filter stops BPDUs on a port. The port then cannot see a loop. Guard and filter are different tools. Guard is the one you want on access ports.
+
+#6 Interview questions
+	- Why does Layer 2 need a spanning tree?
+		A frame has no TTL. Two paths between the same bridges turn a broadcast into a storm. Spanning tree leaves one forwarding path and blocks the others.
+	- How is the root chosen?
+		Lowest bridge ID, which is priority then MAC. Default priority is 32768. You set a lower priority, a multiple of 4096, on the switch that should be root.
+	- What is a root port versus a designated port?
+		The root port is this switch's best way to the root. The designated port is the one port on a segment allowed to forward toward the root. Every other port on the segment is blocked or, in RSTP, an alternate.
+	- How long can classic STP take to move a port to forwarding?
+		Up to max age plus two forward delays, 20 + 15 + 15 seconds. Listening and learning are where the time goes.
+	- What does RSTP change?
+		Discarding, learning, forwarding. Every bridge sends hellos. A proposal and agreement on a point-to-point link moves a port to forwarding without the 30-second wait. An alternate port is ready before the failure.
+	- What is an edge port?
+		A port to a host. It forwards immediately. It should also run BPDU guard, so a BPDU shuts it down instead of joining the tree from a user's desk.
+	- Root guard versus BPDU guard?
+		Root guard protects where the root is: a port that tries to become the path to a new root is blocked. BPDU guard protects an edge port: any BPDU disables the port.
+	- What does loop guard catch that a lost link does not?
+		A link that fails in one direction. BPDUs stop arriving, and without loop guard the blocked port starts forwarding and completes a loop. Loop guard keeps it down.
+	- PVST versus MST, in one line?
+		PVST builds a separate tree per VLAN, so different VLANs can block different uplinks. MST maps many VLANs onto a few trees. One common spanning tree blocks the same link for every VLAN.

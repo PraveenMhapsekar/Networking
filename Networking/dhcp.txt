@@ -1,0 +1,43 @@
+#1 What DHCP is
+	- Dynamic Host Configuration Protocol, RFC 2131. A host comes up with no address and is handed an address, a mask, a gateway, and DNS servers from a pool.
+	- It uses UDP. The client port is 68. The server port is 67. The first packets are broadcasts, because the client has 0.0.0.0 and does not know who the server is.
+	- The lease is temporary. The server remembers the binding of address to client identifier, and the client renews before the lease expires. A client that leaves returns the address with a release, or the server reclaims it at expiry.
+
+#2 DORA
+	- Discover. The client broadcasts from 0.0.0.0 to 255.255.255.255. It may suggest an address it had last time.
+	- Offer. A server offers one address from the pool that matches the client's subnet. The offered address is in yiaddr. More than one server may offer. The client picks one.
+	- Request. The client broadcasts the choice, naming the server it accepted. The other servers see that and take their offers back.
+	- Ack. The chosen server commits the lease. A Nak means the client asked for something the server will not give, and the client starts over with Discover.
+	- The message type is option 53. The important options in the Ack are 1 subnet mask, 3 router, 6 DNS, 51 lease time, and 54 server identifier.
+
+#3 Renewal and relay
+	- At half the lease (T1) the client unicasts a Request to the server that gave it the address. A Ack extends the lease.
+	- At seven eighths of the lease (T2), if that server has not answered, the client broadcasts a Request so any server can renew it.
+	- At expiry the client stops using the address and starts again at Discover.
+	- A router does not forward the client's broadcast. A relay agent on the router does. It writes its own interface address into giaddr and unicasts the packet to the configured helper address. The server uses giaddr to choose the pool and to send the reply back to the relay. Without a helper, a client on a VLAN with no local server gets nothing and falls back to a link-local 169.254.0.0/16 address, which has no gateway.
+	- Option 82 is relay agent information: which circuit the request arrived on. Servers use it to pick a pool or to keep a binding stable per port. The relay strips it on the way back.
+
+#4 Snooping
+	- DHCP snooping marks the ports where servers are allowed as trusted. A Discover is forwarded toward them. An Offer or Ack that arrives on an untrusted port is dropped, so a laptop cannot hand out addresses.
+	- The switch builds a binding table: MAC, IP, VLAN, port, lease time. Dynamic ARP inspection and IP source guard read that table. ARP notes mention the inspection check.
+
+#5 DHCPv6, only the contrast
+	- UDP 546 on the client, 547 on the server. The first message is a Solicit to FF02::1:2, not a broadcast.
+	- The Router Advertisement decides whether DHCPv6 is used. The M flag means the address comes from DHCPv6. The O flag means the address comes from SLAAC and DHCPv6 is used for DNS and similar options. The default gateway is in the advertisement either way. There is no router option that replaces it.
+	- Four messages when an address is leased: Solicit, Advertise, Request, Reply. A host that only needs DNS can send an Information-Request.
+
+#6 Interview questions
+	- What are the four messages, and which ports do they use?
+		Discover, Offer, Request, Ack. The client uses UDP 68. The server uses UDP 67. Discover and Request are broadcasts from 0.0.0.0.
+	- Which options does a host actually need?
+		Subnet mask (1), router (3), DNS (6), and the lease (51). The message type is option 53 and the chosen server is option 54.
+	- When does the client renew, and when does it start over?
+		Unicast renewal at half the lease. Broadcast renewal at seven eighths. At expiry it drops the address and sends Discover again.
+	- What does a relay put in the packet?
+		Its interface address in giaddr, then it unicasts to the helper. The server picks the subnet from giaddr. A router with no helper configured leaves the client with no answer.
+	- Why does a client end up with 169.254.x.x?
+		No Offer arrived. That prefix is link-local autoconfiguration. It reaches other such hosts on the same LAN and it has no route anywhere else.
+	- What does DHCP snooping stop?
+		A server on an untrusted port. Offers from that port are dropped. The binding table it builds is what ARP inspection uses.
+	- How is DHCPv6 different for the gateway?
+		The gateway comes from the Router Advertisement. DHCPv6 can give the address, or only the DNS, depending on the M and O flags. It does not give the default route.

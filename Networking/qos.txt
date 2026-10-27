@@ -1,0 +1,39 @@
+#1 What QoS is
+	- A set of rules for what happens when a link is full. On an empty link every packet goes out immediately and the marks do nothing. QoS matters at the congestion point: which queue is served, which packet is dropped, and which flow is limited.
+	- DiffServ is the model in use. A packet carries a mark, and each hop applies a behavior to that mark on its own. There is no end-to-end reservation. The mark in the IP header is the DSCP, six bits of the traffic class byte. ECN is the other two bits. Both are drawn in the IPv4 and IPv6 notes.
+	- The trust boundary is where the network starts believing the mark. A phone or a router may be trusted. A PC is not. At the first switch, rewrite the PC's mark and trust the phone. Otherwise every host sends its traffic as voice.
+
+#2 Marks
+	- Default, DSCP 0, is best effort. This is what unmarked traffic is.
+	- EF, DSCP 46, is expedited forwarding. A priority queue for voice. It must be rate-limited. An unlimited priority queue lets a large flow starve every other class.
+	- Assured forwarding is four classes, AF1 through AF4, each with three drop precedences. AF11 is dropped last inside its class and AF13 is dropped first. The numeric pattern: AF31 is DSCP 26, AF41 is 34. Interviews want the idea, the drop order, and one or two values.
+	- Class selectors CS1 through CS7 are the old IP precedence values sitting in the top three bits. CS6 (48) and CS7 (56) are used for routing and network control. Putting user traffic there competes with OSPF and BGP.
+	- On a trunk the Layer 2 mark is the 802.1p PCP, three bits in the VLAN tag. A switch maps PCP to a queue. At a router the mapping is PCP to DSCP. They are different fields. Setting one does not set the other unless a policy copies it.
+	- Inside an MPLS core the mark that survives is the TC bits on the label, copied from the DSCP at the ingress. The MPLS notes cover uniform mode and pipe mode. Pipe mode is how a provider keeps its own marks without rewriting the customer's DSCP.
+
+#3 Queues, drops, police, shape
+	- Classification matches an ACL, an incoming DSCP, or a port, and assigns a class. The class is bound to a queue.
+	- A priority queue is served before the others and is policed so it cannot take the whole link. Everything else shares the remainder by weight. Weights are relative. A class with twice the weight of another gets twice the leftover bandwidth while both are backlogged. An idle class gives its share away.
+	- Tail drop waits until the queue is full and then drops arrivals. Many TCP flows see the drop at the same moment, all slow down, and all speed up together. That is synchronization, and the link goes from full to half empty in waves.
+	- WRED drops some packets before the queue is full, with a higher chance for a higher drop precedence. TCP reacts to the early loss and eases off. Do not apply WRED to the voice queue. A dropped voice packet is a glitch, and voice does not slow down the way TCP does. Voice is policed instead, and what exceeds the policer is dropped.
+	- A policer measures a rate and acts immediately: drop, or remark to a worse DSCP. It does not delay the packet. A burst over the rate is lost. Policers sit on ingress or egress.
+	- A shaper measures a rate and delays the excess, sending it later, so the output stays under a ceiling. It adds latency and needs a buffer. It sits on egress. A site with a provider CIR shapes to that CIR so the provider's policer does not drop the burst.
+	- ECN lets a router mark congestion instead of dropping, when both ends of the TCP connection have ECN enabled. The bits are in the same header byte as the DSCP. A marked packet is a signal to slow down. A flow that ignores the mark is still subject to drops.
+
+#4 Interview questions
+	- When does a DSCP mark change anything?
+		When the output link is congested and a scheduler is using the mark to pick a queue or a drop. On an idle link the packet leaves immediately either way.
+	- What is EF, and what has to be configured with it?
+		DSCP 46, the voice class, served by a priority queue. The queue needs a policer. Without the limit, a flow marked EF can fill the link and the other classes starve.
+	- What does the second digit of AFxy mean?
+		Drop precedence inside that class. AF13 is dropped before AF12, and AF12 before AF11, once WRED or a similar dropper is engaged. The first digit is the class, which maps to a queue.
+	- Why are CS6 and CS7 a poor choice for application traffic?
+		Those marks are where routing hellos and network control sit. User traffic in the same queue delays OSPF and BGP under load.
+	- Police versus shape?
+		A policer drops or remarks the excess now. A shaper queues the excess and sends it within the rate, at the cost of delay. Shape toward a provider CIR. Police a class that must never exceed its share.
+	- What is the trust boundary?
+		The port where you decide whether the incoming mark is believed. Rewrite marks from hosts. Trust marks from your own routers and from phones. A host that picks its own EF will crowd the priority queue if the access port trusts it.
+	- Tail drop versus WRED?
+		Tail drop fills the queue and then drops everything new, and TCP flows back off in unison. WRED drops early and randomly, weighted by drop precedence, so TCP slows before the queue overflows. Leave the voice queue out of WRED.
+	- DSCP versus 802.1p?
+		DSCP is six bits in the IP header and travels with the packet across routers. 802.1p is three bits in the VLAN tag and is stripped when the tag is stripped. A policy has to map one to the other at the boundary.

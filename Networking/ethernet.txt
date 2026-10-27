@@ -1,0 +1,51 @@
+#1 What Ethernet is
+	- The link the host actually transmits on. IP, ARP, and VLAN tags are payloads inside an Ethernet frame.
+	- A switched network is full duplex. Each direction has its own pair, so a port does not listen for a collision before sending. CSMA/CD belonged to hubs and shared coax. A duplex mismatch still looks like CRC errors and late collisions, because one side is backing off and the other is not.
+	- The switch learns the source MAC and the ingress port, and forwards on the destination MAC. Unknown unicast, broadcast, and unregistered multicast are flooded. A frame is not sent back out the port it arrived on. Which ports share a flood is a VLAN question. The frame format is this page.
+
+#2 Frame format
+	The NIC delivers this. The preamble and the start-of-frame delimiter are on the wire and are stripped before the driver sees the frame. The interframe gap is 12 bytes of silence after the FCS.
+
+	| Destination MAC (6) | Source MAC (6) | EtherType (2) | Payload (46 to 1500) | FCS (4) |
+
+	- Destination and source are 48-bit MAC addresses.
+	- EtherType says what the payload is. 0x0800 IPv4, 0x86DD IPv6, 0x0806 ARP, 0x8100 a VLAN tag, 0x88a8 a QinQ service tag, 0x8847 MPLS, 0x88cc LLDP.
+	- A value of 1500 or less in that same two-byte field is an 802.3 length, and an LLC header follows. IP uses Ethernet II, so the field is an EtherType of 1536 (0x0600) or more.
+	- Payload is 46 to 1500 bytes. A shorter datagram is padded to 46. The IP total length, or the IPv6 payload length, says where the real datagram ends. The pad is not part of IP.
+	- FCS is a CRC-32 over the destination MAC through the payload. A bad CRC is dropped by the NIC. Captures usually omit the FCS because the NIC already stripped it.
+	- Minimum frame is 64 bytes: 6 + 6 + 2 + 46 + 4. Maximum is 1518: 6 + 6 + 2 + 1500 + 4. The MTU of 1500 is the payload, not the frame.
+	- One 802.1Q tag adds 4 bytes, so the frame is 1522. QinQ adds another 4, so 1526. The tag format is in the VLAN notes. Switches that police 1518 will drop tagged frames.
+
+#3 MAC address
+	- 48 bits, written as six hex bytes. The first 24 bits are the OUI, the vendor. The last 24 are assigned by that vendor.
+	- The least significant bit of the first byte is the I/G bit. 0 is unicast. 1 is multicast or broadcast. The broadcast address is ff:ff:ff:ff:ff:ff.
+	- The next bit is the U/L bit. 0 means a universal address from a vendor. 1 means a local address the operator or the hypervisor chose. Virtual MACs for VRRP and HSRP have this bit set.
+	- IPv4 multicast maps to 01:00:5e plus the low 23 bits of the group. Thirty-two groups can share one MAC. IPv6 multicast maps to 33:33 plus the low 32 bits of the multicast address.
+
+#4 What a switch does with the frame
+	- Learning is per VLAN. The same MAC in two VLANs is two entries. The table ages out, often at 300 seconds, and a topology change tells the switches to age faster.
+	- Known unicast goes out one port. Unknown unicast is flooded inside the VLAN.
+	- Jumbo frames raise the MTU, often to 9000. Every switch and both hosts on the path have to agree. One device left at 1500 silently drops the large frames. Pings of 100 bytes still work.
+	- 802.3x pause is a MAC control frame, EtherType 0x8808, that asks the neighbor to stop sending. Priority flow control (802.1Qbb) pauses one traffic class. A pause storm is a head-of-line block for everything sharing that link.
+
+#5 Interview questions
+	- What is the minimum Ethernet frame, and what is the MTU?
+		64 bytes on the wire, counting the FCS and not counting the preamble. The MTU is 1500, which is the payload. A short IP packet is padded out to 46 bytes of payload so the frame still reaches 64.
+	- Which fields are in the frame the host sees?
+		Destination MAC, source MAC, EtherType, payload, FCS. The preamble and the start-of-frame delimiter stay on the wire.
+	- How do you tell EtherType from an 802.3 length?
+		1500 or below is a length, and LLC follows. 1536 (0x0600) or above is an EtherType. IPv4 is 0x0800.
+	- Why is a tagged frame 1522 bytes?
+		The 802.1Q tag is 4 bytes inserted after the source MAC. 1518 plus 4 is 1522. QinQ makes it 1526. A switch still set for 1518 drops those frames.
+	- What do the two low bits of the first MAC byte mean?
+		The low bit is unicast (0) or group (1). The bit next to it is universal (0) or locally assigned (1). Broadcast is ff:ff:ff:ff:ff:ff, which is a group address.
+	- Where does an IPv4 multicast group go in the MAC?
+		01:00:5e plus the low 23 bits of the group address. Several groups share one MAC, so the host may still have to filter in software.
+	- What does the FCS cover, and who checks it?
+		A CRC-32 from the destination MAC through the payload. The receiving NIC drops a bad frame. The CPU usually never sees it.
+	- A 64-byte ping works and a file transfer does not. What do you check?
+		MTU. Someone on the path is still at 1500 while the sender is sending jumbo frames, or a tag pushed the frame past 1518.
+	- Why is there no collision detection on a switch port?
+		The port is full duplex. Transmit and receive are separate, so the station does not have to yield the wire. CSMA/CD was for a shared medium.
+	- What does a switch do with a destination MAC it has never seen?
+		It floods the frame out of every other port in the same VLAN. When a frame from that MAC arrives, the switch learns the port and stops flooding.

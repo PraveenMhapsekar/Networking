@@ -1,56 +1,133 @@
+#1 What IPv4 is
+	- A connectionless, best-effort datagram protocol. No handshake, no retransmission, no guarantee a packet arrives or arrives once. TCP adds that above it. UDP does not.
+	- Every packet is forwarded on its own. A router does not keep a flow. The header has to carry everything the next hop needs.
+	- The header is at least 20 bytes and at most 60. The payload starts immediately after it. IPv6 removed router fragmentation and the header checksum. Those two facts are the usual follow-up, so know why IPv4 still has both.
 
-HEADER
-	#1
-		ver (4)
-		header len (4)
-		TOS (8)
-		Total Len (16)
+#2 Header format
+	Twenty bytes when there are no options. Multi-byte fields are big-endian.
 
-	#2
-		Identification (16)
-		Flags(3)  Res : DF : MF 
-		Fragment offset (13)
+	 0                   1                   2                   3
+	 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|Version|  IHL  |    DSCP   |ECN|          Total Length         |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|         Identification        |R|D|M|    Fragment Offset      |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|  Time to Live |   Protocol    |        Header Checksum        |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|                       Source Address                          |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|                    Destination Address                        |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
-	#3
-		TTL (8)
-		Proto (8)
-		Checksum (16)
+	- Version, 4 bits. Value 4. A 6 here means the rest of this layout is wrong. Drop it.
+	- IHL, 4 bits. Internet Header Length, counted in 32-bit words, not in bytes. Minimum 5, which is 20 bytes. Maximum 15, which is 60 bytes. Anything below 5 is illegal. The payload starts at IHL * 4.
+	- DSCP, 6 bits, and ECN, 2 bits. This byte used to be called TOS: 3 bits of precedence, 4 bits of type of service, 1 bit left zero. Routers now read DSCP for QoS (EF is 46, used for voice) and ECN for congestion (11 means "congestion experienced"). The byte is still 8 bits. The name changed.
+	- Total Length, 16 bits. Length in bytes of this datagram: header plus data. Minimum 20, maximum 65535. It is not the payload length, and it is not the Ethernet frame length. Payload length is total length minus IHL * 4.
+	- Identification, 16 bits. Copied onto every fragment of this datagram. The destination groups fragments by (source, destination, protocol, identification). A later datagram needs a different id while the first one might still be waiting to be reassembled.
+	- Flags, 3 bits. Reserved must be 0. DF means do not fragment. MF means more fragments follow. MF is 0 on the last fragment and on a packet that was never fragmented.
+	- Fragment Offset, 13 bits. Where this fragment's data sits in the original payload, measured in 8-byte units, not in bytes. Offset 185 means byte 1480.
+	- TTL, 8 bits. Remaining hops. Each router subtracts at least one before forwarding. A router that would make it 0 drops the packet and sends ICMP Time Exceeded (type 11, code 0) back to the source. That is what traceroute is. Common starting values are 64 and 128.
+	- Protocol, 8 bits. Which header follows the IP header. 1 ICMP, 6 TCP, 17 UDP, 47 GRE, 50 ESP, 89 OSPF. This is the demux key. It is not a port number.
+	- Header Checksum, 16 bits. Covers the header only. See #5.
+	- Source and destination, 32 bits each. A router forwards on the destination. It rewrites neither address unless it is doing NAT.
+	- Options, if IHL is more than 5, then padding to a 32-bit boundary. Record route, timestamp, loose source route, strict source route. Rare on the open internet, and source routing is often dropped because the sender would be choosing the path. The checksum covers the options too.
 
-	#4 
-		Src Addr
+#3 Total length, and the padding that is not yours
+	- Total length is the only size that matters once the packet is IP. A capturing tool may show a longer frame. Ethernet has a minimum frame of 64 bytes, so a short datagram is padded up by the link. Those pad bytes are not part of the datagram. Stop reading at total length.
+	- On Ethernet the payload of the frame is the IP datagram, and the usual MTU is 1500. So total length is at most 1500 on that link. The Ethernet header and the FCS sit outside that 1500. A tagged frame still carries a 1500-byte IP datagram. The tag comes out of the frame overhead, which is why a tagged frame is 1522 bytes on the wire instead of 1518.
+	- A router that needs to know "will this fit the next link" compares total length to that link's MTU.
+	- MSS is a TCP number, not an IP number. On Ethernet, MSS is 1460: MTU 1500 minus 20 bytes of IP header minus 20 bytes of TCP header. The MSS is the payload TCP will put in one segment. It is announced in the SYN. It does not include either header. A SYN that advertises 1460 produces IP packets whose total length is 1500.
 
-	#5
-		Dst Addr
+#4 Fragmentation
+	- A router may fragment an IPv4 datagram when total length is greater than the next-hop MTU and DF is clear. IPv6 routers do not do this. In IPv6 only the source fragments.
+	- Each fragment is a complete IP datagram with its own 20-byte header. Identification is copied. The offset says where this piece belongs. Total length on a fragment is the length of that fragment, not the length of the original datagram. The header checksum is recomputed because the header changed.
+	- MF is 1 on every fragment except the last. A packet is a fragment when MF is 1 or the offset is not 0. Offset 0 and MF 0 means "not a fragment."
+	- The offset is in 8-byte units because 13 bits cannot hold a byte offset into a 65535-byte datagram (that would need 16 bits). Every fragment except the last must therefore carry a multiple of 8 bytes of payload. The last fragment can be any length.
+	- Reassembly happens at the destination, not at the next router. Intermediate routers forward fragments as ordinary packets. The destination waits until every byte from offset 0 through the last fragment is present, then hands one datagram up. A missing piece is held on the order of 30 seconds and then dropped, with ICMP Time Exceeded type 11 code 1.
+	- Only offset 0 contains the TCP or UDP header. Later fragments have no ports. An ACL or a NAT that matches on ports cannot classify them. That is one reason networks prefer not to fragment.
+	- DF set, and the packet does not fit: the router drops it and sends ICMP Destination Unreachable type 3 code 4, "fragmentation needed," and a modern router includes the next-hop MTU. The source then sends a smaller packet. That exchange is Path MTU Discovery. TCP sets DF for this reason.
+	- If those ICMP messages are filtered, the source never learns the MTU. Small packets pass and full-size packets vanish. That is a PMTU black hole. Clamping the MSS, or probing packet size without relying on ICMP, is the workaround.
+	- Worked example. A 4000-byte datagram, 20-byte header, so 3980 bytes of payload. Next MTU is 1500. DF is clear. The largest payload that fits and is a multiple of 8 is 1480.
+		Fragment 0: offset 0,   MF 1, total length 1500, bytes 0 through 1479.
+		Fragment 1: offset 185, MF 1, total length 1500, bytes 1480 through 2959. 185 * 8 = 1480.
+		Fragment 2: offset 370, MF 0, total length 1040, bytes 2960 through 3979. 370 * 8 = 2960, and 20 + 1020 = 1040.
+		1480 + 1480 + 1020 = 3980. Same identification on all three. The TCP ports, if any, are only in fragment 0.
+	- Overlapping offsets are how the old teardrop attack confused reassembly. A stack should drop an overlap, not glue contradictory bytes together.
+	- A router must be able to forward a datagram of 68 bytes: the maximum 60-byte header plus 8 bytes of data, which is one offset unit. A host must be prepared to receive 576 bytes. 576 is not the MTU of Ethernet. 1500 is.
 
-#2 Compute IPv4 Checksum
-  int16_t ip_checksum(void* vdata,size_t length) {
-    // Cast the data pointer to one that can be indexed.
- 		char* data=(char*)vdata;
+#5 Header checksum
+	- It covers the IP header and only the header. The payload is the transport checksum's job (TCP, UDP, ICMP). A router does not want to sum 1500 bytes at every hop.
+	- It is recomputed at every hop anyway, because the TTL changes. NAT recomputes it because an address changed. Fragmentation recomputes it because offset, MF, and total length changed.
+	- Algorithm. Set the checksum field to 0. Add the header as 16-bit words, using one's complement addition: when the sum overflows 16 bits, add that carry back into the low 16. This is called the end-around carry. Then store the bitwise NOT of the 16-bit sum.
+	- The receiver adds the header the same way, this time including the checksum field. A correct header sums to 0xffff (all ones), which is zero in one's complement arithmetic. Anything else is a bad header and is dropped. There is no "please resend" at this layer.
+	- Hand example, checksum field still 0. The eight words are 4500, 003c, 1c46, 4000, 4006, 0000, ac10, 0a63, and then ac10, 0a0c. Summing with end-around carry gives 4e19. The NOT of that is b1e6, and b1e6 is what goes in the header.
+	- An IP header is always a multiple of 4 bytes, so the odd-trailing-byte case does not come up here. It does come up for a UDP checksum, which is the same math over a pseudo-header plus the UDP packet, and a packet can have an odd length. The odd byte is treated as the high byte of a 16-bit word whose low byte is 0.
+	- Incremental update, which NAT actually uses. You do not have to re-sum the whole header. RFC 1624: take the old checksum, add the NOT of the old 16-bit field, add the new field, fold the carry, and NOT is already accounted for if you update ~HC. In practice: HC' = ~(~HC + ~m + m'), with end-around carry. Same trick updates the TCP checksum, because the IP addresses sit in the TCP pseudo-header too.
 
- 		// Initialise the accumulator.
- 		uint32_t acc=0xffff;
+	One implementation of the sum. The accumulator starts at 0xffff, which is negative zero in one's complement, so it matches a sum that started at 0 for any header that is not all zeros. The all-zero header is the odd case: the value to store is 0xffff, and this copy returns 0. Interview answer: start at 0, store the NOT.
 
- 		// Handle complete 16-bit blocks.
- 		for (size_t i=0;i+1<length;i+=2) {
- 			uint16_t word;
- 			memcpy(&word,data+i,2);
- 			acc+=ntohs(word);
- 			if (acc>0xffff) {
- 				acc-=0xffff;
- 			}
- 		}
+	int16_t ip_checksum(void *vdata, size_t length) {
+		char *data = (char *)vdata;
+		uint32_t acc = 0xffff; /* one's-complement -0; textbook sum starts at 0 */
 
- 		// Handle any partial block at the end of the data.
- 		if (length&1) {
- 			uint16_t word=0;
- 			memcpy(&word,data+length-1,1);
- 			acc+=ntohs(word);
- 			if (acc>0xffff) {
-				acc-=0xffff;
- 			}
- 		}
+		for (size_t i = 0; i + 1 < length; i += 2) {
+			uint16_t word;
+			memcpy(&word, data + i, 2); /* next 16-bit word, still in network order */
+			acc += ntohs(word); /* add it to the host-order sum */
+			if (acc > 0xffff)
+				acc -= 0xffff; /* end-around carry: fold the overflow back in */
+		}
 
- 		// Return the checksum in network byte order.
- 		return htons(~acc);
-  }
+		if (length & 1) { /* UDP can be odd; an IP header never is */
+			uint16_t word = 0;
+			memcpy(&word, data + length - 1, 1); /* leftover byte in the low address */
+			acc += ntohs(word); /* that byte is the high byte; the low byte stays 0 */
+			if (acc > 0xffff)
+				acc -= 0xffff;
+		}
 
+		return htons(~acc); /* one's complement, back in network order */
+	}
+
+#6 A few addresses worth knowing
+	- 10.0.0.0/8, 172.16.0.0/12, and 192.168.0.0/16 are private (RFC 1918). They are not routed on the public internet. 100.64.0.0/10 is carrier-grade NAT.
+	- 127.0.0.0/8 is loopback. 169.254.0.0/16 is link-local, what a host picks when DHCP fails. 224.0.0.0/4 is multicast. 240.0.0.0/4 is reserved.
+	- 255.255.255.255 is the limited broadcast. It does not cross a router. A directed broadcast is the all-ones address of one subnet. Routers usually refuse to forward it, because of the old smurf amplification.
+	- Class A /8, class B /16, class C /24, class D multicast, class E reserved. This is historical. Routing has been CIDR for decades: the prefix length is explicit, and two subnets of the same class can have different masks. If an interviewer says "class B," they mean a /16 unless they say otherwise.
+
+#7 Interview questions
+	- How big is the IPv4 header?
+		20 bytes with no options, 60 with a full option list. IHL is that size in 32-bit words: 5 through 15. Below 5 the packet is invalid.
+	- What does total length include?
+		The header and the data of this datagram, in bytes. Subtract IHL * 4 to get the payload. It is not the Ethernet frame size. Link padding after a short datagram is not counted, so you stop at total length.
+	- Why is the fragment offset in units of 8 bytes?
+		The field is 13 bits. A byte offset into a 64 KB datagram needs 16 bits. Units of 8 make 13 bits enough. Every fragment but the last must carry a multiple of 8 bytes of data.
+	- Walk a 4000-byte datagram, 20-byte header, across an MTU of 1500.
+		Three fragments, identification identical. Offsets 0, 185, 370. The first two are total length 1500 with MF set. The last is total length 1040 with MF clear. 185 * 8 is 1480, which is where the second piece starts.
+	- How can you tell a packet is a fragment?
+		MF is set, or the offset is not zero. Both clear means the datagram was never fragmented.
+	- Where are fragments put back together?
+		At the destination host. Routers do not reassemble. They forward each fragment on its own. The key is source, destination, protocol, and identification.
+	- Why do firewalls struggle with fragments?
+		The TCP or UDP header is only in the first fragment. Later fragments have an offset and a payload and no ports.
+	- What happens when DF is set and the packet is larger than the MTU?
+		The router drops it and sends ICMP type 3 code 4 with the next-hop MTU. The source retries smaller. If that ICMP is filtered, large packets black-hole and a ping still works.
+	- What does the header checksum cover, and why is it redone at every hop?
+		The header only, not the payload. TTL changes at every hop, so the old checksum would be wrong. TCP and UDP checksum the payload end to end.
+	- How is the checksum computed?
+		Zero the field. Sum the header as 16-bit words with end-around carry. Store the one's complement of that sum. The receiver sums the header including the checksum and expects 0xffff.
+	- A NAT rewrites the source address. What else breaks?
+		The IP header checksum, and the TCP or UDP checksum, because those include the IP addresses in a pseudo-header. Both can be fixed with an incremental update. You do not re-sum the payload.
+	- What does TTL do, and how does traceroute use it?
+		It is a hop budget. A router that decrements it to zero drops the packet and sends ICMP Time Exceeded type 11 code 0. Traceroute sends TTL 1, then 2, then 3, and reads which router answered.
+	- What is the difference between MTU and MSS?
+		MTU is the largest IP datagram the link will carry. MSS is the largest TCP payload inside that datagram. On Ethernet, MTU 1500 and MSS 1460 with no IP or TCP options.
+	- What is the smallest datagram a router must be able to forward, and what must a host accept?
+		Forward 68 bytes. Accept 576 bytes. Ethernet's MTU is 1500, which is a different number from both.
+	- Name three protocol field values.
+		1 ICMP, 6 TCP, 17 UDP. 89 is OSPF if they keep going.
+	- What replaced the TOS byte?
+		The same 8 bits: 6 bits of DSCP and 2 bits of ECN. DSCP is the QoS mark. ECN 11 means a router marked congestion instead of dropping.
+	- Why did IPv6 drop this checksum and forbid routers to fragment?
+		The checksum had to be rewritten at every hop because the hop limit changes, and it did not protect the payload. Fragmentation in the path broke ACLs, NAT, and PMTUD. IPv6 leaves both to the ends.

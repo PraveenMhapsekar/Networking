@@ -1,0 +1,31 @@
+#1 What BFD is
+	- Bidirectional Forwarding Detection, RFC 5880. A lightweight hello that tests whether the forwarding path to a neighbor is alive, in tens of milliseconds.
+	- Routing protocols have their own hellos, and those timers are slow on purpose. OSPF's dead interval is 40 seconds. BGP's hold time is 180. A link that fails without dropping the interface, a switched path in the middle, or a one-way fiber, sits in those timers until they expire. BFD is the fast detector. The routing protocol is still the one that reconverges.
+	- It is a session between two systems, negotiated, and then other protocols register with it. OSPF, IS-IS, BGP, static routes, and HSRP can all share one BFD session to the same neighbor. When the session drops, each client tears down its own adjacency at once.
+
+#2 How a session works
+	- Asynchronous mode is the one everyone runs. Both sides send control packets at a negotiated interval. If a side misses a negotiated number of them, the multiplier, it declares the session down. A common starting point is 300 milliseconds times 3. A fast one is 50 milliseconds times 3. The multiplier of 3 avoids a single lost packet flapping the network.
+	- Each side advertises the minimum interval it will send and the minimum interval it can receive. The actual rate is the slower of the two. You cannot force a peer to go faster than it offered.
+	- States: AdminDown, Down, Init, Up. Both sides have to see the other before the session is Up. AdminDown is how an operator or a shutdown takes it down on purpose.
+	- Single-hop BFD uses UDP destination port 3784, sent to the neighbor on the link. Echo mode, UDP 3785, sends a packet for the neighbor to loop back, so the test includes that neighbor's forwarding path and not only its control-plane process. Multihop BFD, for a BGP peer that is not on the local link, uses UDP 4784.
+	- Very fast timers need hardware offload. A session run in software on the main CPU will be late under load, and a late hello looks like a failure. A false down of BFD withdraws routes. That is worse than having waited for the protocol timer.
+
+#3 What it is for, and what it is not
+	- Use it where a failure is silent. A direct fiber pull drops the interface, and the protocol hears that without BFD. A failure on the far side of a switch, or a link that dies in one direction, does not drop the local interface. That is the case BFD is for.
+	- It does not choose a path and it does not carry prefixes. When it goes down, BGP drops the peer and OSPF drops the adjacency, and those protocols do what they already do.
+	- Both ends must be configured. Timers are negotiated, so a mismatch in the configured minimums just runs at the slower end. A mismatch in "enabled at all" means one side never comes up and the client protocol falls back to its own hellos, or refuses the neighbor, depending on how strict the configuration is.
+	- Tie it to the same interfaces you route over. A BFD session that takes a different path from the traffic it is protecting will pull the route down while the real path is fine.
+
+#4 Interview questions
+	- What problem does BFD solve that a shorter BGP keepalive does not?
+		A sub-second detect, shared by every protocol to that neighbor, without sending BGP keepalives at 50 milliseconds. BGP still uses its hold timer as a backstop. BFD is allowed to be the fast one because the packets are small and can be offloaded.
+	- What is negotiated?
+		The transmit interval, the receive interval, and the detect multiplier. The session runs at the slower peer's rate. Missing "multiplier" packets in a row marks the session down.
+	- Which UDP ports?
+		3784 for single-hop control packets, 3785 for echo, 4784 for multihop.
+	- A direct link is unplugged. Does BFD help?
+		The interface goes down and OSPF or BGP drops on that event. BFD helps when the interface stays up and the path beyond it is dead.
+	- Why is a 50 millisecond timer on the main CPU a risk?
+		Under load the hello is late, the peer declares a failure, and routes are withdrawn on a healthy path. Fast timers belong in hardware, or the interval should be one the CPU can keep.
+	- Which protocols typically subscribe to one session?
+		OSPF or IS-IS on the link, BGP if the peer is reached through that link, and sometimes a static route or HSRP. One failure should bring all of them down together.

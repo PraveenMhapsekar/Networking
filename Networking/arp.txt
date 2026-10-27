@@ -1,0 +1,49 @@
+#1 What ARP is
+	- Address Resolution Protocol, RFC 826. On a link, IP needs a MAC before it can build an Ethernet frame. ARP asks "who has this IPv4 address" and caches the answer.
+	- It is for IPv4 on a LAN. IPv6 uses Neighbor Solicitation and Neighbor Advertisement instead. The cache, the request, and the failure look the same. The packet does not.
+	- A host ARPs for a destination only when that destination is on-link. If the route points at a gateway, the host ARPs for the gateway's IP and uses the gateway's MAC. The original destination IP stays in the packet.
+
+#2 Packet format
+	EtherType is 0x0806. The ARP payload for Ethernet and IPv4 is 28 bytes.
+
+	| Hardware type (16) | Protocol type (16) |
+	| HW length (8) | Protocol length (8) | Opcode (16) |
+	| Sender MAC (48) |
+	| Sender IP (32) |
+	| Target MAC (48) |
+	| Target IP (32) |
+
+	- Hardware type 1 is Ethernet. Protocol type 0x0800 is IPv4. Lengths are 6 and 4.
+	- Opcode 1 is a request. Opcode 2 is a reply.
+	- A request is sent to the Ethernet broadcast ff:ff:ff:ff:ff:ff. The target MAC in the ARP payload is zero. The sender fills in its own MAC and IP, and the IP it is looking for.
+	- The reply is unicast to the requester. The owner puts its MAC in the sender field and swaps the requester into the target fields.
+	- Every host that hears the request may cache the sender. The requester caches the reply. Entries age out. A typical timeout is a few minutes. While a request is outstanding the entry is incomplete, and packets for that IP wait or are dropped.
+
+#3 Gratuitous ARP and proxy ARP
+	- A gratuitous ARP is a request or a reply in which the sender IP and the target IP are the same. Nobody asked. The host is announcing "this IP is at this MAC."
+	- Hosts use it at startup to detect a duplicate address: if someone answers, the address is taken. Routers use it on failover. When VRRP or HSRP moves the virtual IP, the new master sends a gratuitous ARP so switches learn the virtual MAC on the new port and hosts refresh their cache.
+	- Proxy ARP: a router answers a request for an IP that is not one of its own addresses, and it answers with its own MAC. The host then sends the packet to the router, and the router forwards it. This hides a missing route or a wrong mask. It also hides the real topology, so a network that proxies for everything is hard to troubleshoot. The better fix is a correct mask and a default gateway.
+
+#4 Failures worth recognizing
+	- No reply means the target is down, the VLAN is wrong, or the request never reached that subnet. Two hosts in different VLANs do not hear each other's broadcasts. ARP does not cross a router.
+	- A wrong cache entry black-holes traffic until it ages out. After a move, a clear of the ARP entry or a gratuitous ARP fixes it. The switch MAC table can be wrong at the same time. One is IP to MAC. The other is MAC to port.
+	- Dynamic ARP inspection checks ARP against the DHCP snooping binding: this port is allowed to claim this IP. A request that fails the check is dropped. That stops a host from answering for the gateway's address.
+	- ARP has no authentication of its own. Anyone on the LAN who can send a broadcast can offer a MAC for an IP. Inspection and a correct binding table are the controls.
+
+#5 Interview questions
+	- What does ARP resolve?
+		An IPv4 address to a MAC address on the same link. The EtherType is 0x0806. IPv6 does this with Neighbor Discovery, not with ARP.
+	- Who is the Ethernet destination of a request?
+		The broadcast address ff:ff:ff:ff:ff:ff. The target MAC inside the ARP payload is zero. The reply is unicast back to the requester.
+	- When does a host ARP for the gateway instead of the destination?
+		When the destination is off-link. The route says the next hop is the gateway, so the frame is built for the gateway's MAC. The IP destination is unchanged.
+	- What is a gratuitous ARP?
+		An ARP in which the sender IP and the target IP are equal. The host is announcing its mapping, looking for a duplicate, or updating everyone after a failover.
+	- What is proxy ARP?
+		A router answers for an IP it does not own, using its own MAC, and then routes the packet. It covers up a host that has no route to that destination.
+	- Why do two hosts on different VLANs fail ARP?
+		ARP is a broadcast, and a broadcast stays inside the VLAN. They need a router, and each host ARPs for that router.
+	- A host moved to a new port and traffic dies for a few minutes. What is stale?
+		The ARP cache on the peers, which still has the old MAC, or the switch MAC table, which still points at the old port. A gratuitous ARP refreshes both.
+	- How does ARP inspection know a claim is false?
+		DHCP snooping recorded which IP was leased to which MAC on which port. An ARP announcement that disagrees is dropped.

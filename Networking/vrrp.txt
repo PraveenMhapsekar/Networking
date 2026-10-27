@@ -1,0 +1,40 @@
+#1 What first-hop redundancy is
+	- A host is configured with one default gateway. If that router reboots, the host has nowhere to send off-link traffic until someone changes the gateway. VRRP and HSRP let two or more routers share a virtual IP and a virtual MAC, and elect one owner of that address.
+	- Hosts ARP for the virtual IP and learn the virtual MAC. On a failover the new owner sends a gratuitous ARP. Switches move the virtual MAC to the new port. Hosts that still have the virtual MAC in the ARP cache do not need a new address. They need the switches to deliver the frame to the new owner.
+	- The VXLAN anycast gateway is the data-center version of the same idea: the same IP and the same MAC on every leaf, with no election. VRRP and HSRP are what campuses and firewall pairs still run. The anycast gateway is in the VXLAN notes.
+
+#2 VRRP
+	- Virtual Router Redundancy Protocol, RFC 5798. IP protocol 112. Advertisements go to 224.0.0.18. IPv6 uses FF02::12.
+	- A group has a VRID and a virtual IP. Priority runs from 1 to 254, default 100. The highest priority is master. A router that owns the virtual IP as a real interface address uses priority 255.
+	- The master sends advertisements once a second. If the backups stop hearing them, the highest-priority backup becomes master. Preemption is on by default: a recovered router with a better priority takes the role back.
+	- The virtual MAC is 00:00:5e:00:01 and the VRID for IPv4, and 00:00:5e:00:02 and the VRID for IPv6. Every vendor uses that MAC, so a host moved between a Cisco and a non-Cisco master still has the right destination.
+	- The base protocol tracks whether the master is speaking. It does not track the master's uplink. Implementations add object tracking: if the uplink route disappears, decrement the priority enough that a backup with a working uplink takes over. Without that, the master keeps the virtual IP and black-holes the traffic.
+
+#3 HSRP
+	- Hot Standby Router Protocol, Cisco. UDP port 1985. Version 1 sends to 224.0.0.2. Version 2 sends to 224.0.0.102 and adds IPv6 and millisecond timers. Both ends of a group have to run the same version.
+	- One router is active, one is standby, any others listen. Priority defaults to 100 and higher wins. Hello is 3 seconds, hold time is 10.
+	- Preempt is off by default. A recovered router with a higher priority stays standby until preempt is enabled. That default surprises people who just ran VRRP. Enable preempt if the higher priority should mean "this one comes back."
+	- Version 1 virtual MAC is 00:00:0c:07:ac and the group number. Version 2 is 00:00:0c:9f:f and a longer group number. These are locally assigned MACs, different from VRRP's, so HSRP and VRRP are not interchangeable on the wire.
+	- Interface tracking works as in VRRP: lose the uplink, lower the priority, let the standby take over if preempt is on. Tracking without preempt decrements the number and changes nothing until the active router fails outright.
+	- GLBP is the Cisco variant that hands different hosts different virtual MACs so both routers forward at once. VRRP and HSRP elect one forwarder. The load sharing is "some VLANs prefer router A, some prefer router B," by giving each group a different priority.
+
+#4 Failure modes
+	- Split brain: the two routers lose the path they use for advertisements and both become master. Hosts flap between two virtual-MAC locations. The advertisements need a path that fails only when the LAN itself fails. Some designs add BFD so a one-way failure is noticed.
+	- Both routers active, and the MAC table thrashing, is this failure. Check that they can hear each other's hellos before you debug the hosts.
+	- A host with the physical IP of one router configured as its gateway, instead of the virtual IP, is unprotected. The virtual IP is the one that moves.
+
+#5 Interview questions
+	- What do the hosts use as their gateway?
+		The virtual IP. They resolve it to the virtual MAC. The routers' own addresses stay up for management and for the routing protocols, and they are not what the hosts point at.
+	- How does a failover update the switches?
+		The new master sends a gratuitous ARP for the virtual IP, sourced from the virtual MAC. The MAC table moves. Hosts that cached the virtual MAC keep using it.
+	- Which protocol numbers and addresses?
+		VRRP is IP protocol 112 to 224.0.0.18, MAC 00:00:5e:00:01 plus the VRID. HSRP is UDP 1985 to 224.0.0.2 (v1) or 224.0.0.102 (v2), with a 00:00:0c virtual MAC.
+	- Who wins, and who takes back the role after a reboot?
+		Highest priority. VRRP preempts by default. HSRP does not, until preempt is configured. Priority 255 in VRRP means this router really owns the address.
+	- The master is up and the uplink is down. Why is traffic black-holed?
+		Nothing is tracking the uplink, so the master keeps the virtual IP. Decrement the priority on uplink loss, and allow preempt, so a backup with a working path becomes master.
+	- Why would both routers be active?
+		They cannot hear each other's advertisements, so each believes it is the only one. That is a split in the LAN or a filter on protocol 112 or UDP 1985, not a host problem.
+	- How does the anycast gateway differ?
+		Every leaf has the same gateway IP and the same MAC at once. There is no hello and no election. VRRP and HSRP exist where there is still one active forwarder for a subnet.

@@ -1,8 +1,67 @@
-SOURCE TREE:
-path from a multicast source (the root of the tree) through the network to the receivers in the multicast group. The source tree is the shortest path that a multicast packet can take from source to receiver, so it is also known as the shortest-path tree (SPT). The sender and receiver are annotated as a source and multicast group pair, shortened to (S, G); for example, (192.168.1.1, 225.9.2.6). The following figure illustrates three shortest-path trees from the source to three receivers.
+#1 IP Multicast
+	- One packet from a source is replicated by routers only on branches that have receivers. The source does not send one copy per receiver.
+	- The destination address is a group, not a host. The source does not know who joined.
+	- IPv4 groups are 224.0.0.0/4 (class D), 224.0.0.0 through 239.255.255.255.
+		- 224.0.0.0/24 is link-local. Routers do not forward it. 224.0.0.1 all hosts, 224.0.0.2 all routers, 224.0.0.5 OSPF, 224.0.0.13 PIM routers, 224.0.0.22 IGMPv3.
+		- 224.0.1.0 through 238.255.255.255 can be routed between networks.
+		- 239.0.0.0/8 is administratively scoped, the multicast equivalent of private unicast space. It stays inside the organization.
+		- 232.0.0.0/8 is the SSM range. The receiver names the source, not just the group.
+	- IPv6 multicast is ff00::/8. Scope is inside the address (ff02:: is link-local). Hosts speak MLD instead of IGMP.
+	- On Ethernet the IPv4 group maps to a MAC 01:00:5e plus the low 23 bits of the group. 32 groups can share one MAC, so a host may filter extra frames in software.
+	- Forwarding still needs a unicast route to the source. Multicast does not build that route.
 
-SHARED TREE:
-	 path rooted at the RP, not at the multicast source. A shared tree is also known as an RP tree or RPT. Routers forward multicast packets from various sources to the RP and the RP forwards the packets down the shared tree. A shared tree is annotated as (*, G), using a wildcard as the source because all sources belonging to the multicast group share the same distribution tree from the RP. An example shared tree annotation is (*, 226.3.1.5). The following figure illustrates a shared tree from the root at the RP to the receivers.
+#2 IGMP
+	- Internet Group Management Protocol. It runs only between a host and the routers on its own subnet. It does not build trees across the network.
+	- A host that wants traffic sends a membership report (a join). The router then asks PIM to pull that group down to this LAN.
+	- IGMPv1: hosts join with a report. There is no leave. The router waits for the query timer to expire before it stops the group.
+	- IGMPv2: adds an explicit Leave. The router sends a group-specific query and drops the group quickly if nobody answers. The querier is the router with the lowest IP on the LAN.
+	- IGMPv3: the report names sources. INCLUDE means "only these sources." EXCLUDE means "every source except these." SSM needs v3 (or MLD v2 on IPv6).
+	- One querier per LAN sends the periodic general query. Other routers stay quiet and listen. Hosts answer so the querier knows the group still has a member.
+	- v1 and v2 suppress duplicate reports on the LAN. v3 reports go to 224.0.0.22 and are not suppressed the same way, because each host's source list can differ.
+	- The router stores "this interface has members of G." It does not need the host address, except when v3 tracking is on.
 
-REVERSE PATH FORWARDING:
-	PIM uses reverse-path forwarding (RPF) to prevent multicast routing loops by leveraging the unicast routing table on the virtual router. When the virtual router receives a multicast packet, it looks up the source of the multicast packet in its unicast routing table to see if the outgoing interface associated with that source IP address is the interface on which that packet arrived. If the interfaces match, the virtual router duplicates the packet and forwards it out the interfaces toward the multicast receivers in the group. If the interfaces don’t match, the virtual router drops the packet. The unicast routing table is based on the underlying static routes or the interior gateway protocol (IGP) your network uses, such as OSPF.
+#3 PIM
+	- Protocol Independent Multicast. Routers use it to build the forwarding tree. "Independent" means RPF uses whatever unicast table is already there: OSPF, IS-IS, EIGRP, BGP, or static. PIM does not compute its own shortest paths.
+	- Neighbors find each other with PIM Hello to 224.0.0.13.
+	- Designated router on a LAN: highest priority, then highest IP. The DR registers local sources and sends joins for local receivers.
+	- Dense mode (PIM-DM): flood then prune. It assumes most of the network wants the stream. State is (S, G). A pruned branch is flooded again when the prune timer ends. Graft puts a branch back immediately. Used on small LANs, not on the Internet.
+	- Sparse mode (PIM-SM): explicit join. It assumes most of the network does not want the stream. This is the mode interviews mean by "PIM." It needs a rendezvous point (RP).
+	- SSM: no RP. The receiver joins (S, G) directly. The last-hop router sends a PIM join toward that source. Requires IGMPv3.
+	- Bidirectional PIM: one shared tree rooted at the RP, and traffic may flow both toward the RP and down the tree. No source-tree switch. Used when many sources each send a little.
+
+#4 Source Tree
+	- Path from one source, the root, to the receivers. Also called the shortest-path tree (SPT).
+	- Written (S, G). Example: (192.168.1.1, 225.9.2.6) is source 192.168.1.1 sending to group 225.9.2.6.
+	- RPF for this tree looks up S in the unicast table. The packet must arrive on the interface that unicast would use to reach S.
+	- This is the tree dense mode builds, and the tree sparse mode switches to after it learns who S is.
+
+#5 Shared Tree
+	- Path rooted at the RP, not at the source. Also called an RP tree (RPT).
+	- Written (*, G). The star means every source of that group uses the same tree from the RP down to the receivers. Example: (*, 226.3.1.5).
+	- Sources send toward the RP. The RP forwards down the shared tree. RPF for (*, G) is toward the RP, not toward the source.
+	- Sparse mode starts here, then the last-hop router usually joins the source tree and prunes that source off the shared tree.
+
+#6 Reverse Path Forwarding
+	- RPF is how PIM avoids loops. The router does not look at the destination. It looks at the source.
+	- On arrival, the router looks up the source (or the RP, for a shared-tree packet) in the unicast table.
+	- If the packet arrived on the same interface unicast would use to reach that address, the RPF check passes. The router copies the packet out the interfaces that have receivers.
+	- If it arrived on any other interface, the router drops it.
+	- A correct unicast route to the source is required. The usual failure is "RPF failed": multicast came in a different door than the IGP uses to reach the source. Fix the IGP, or add a static multicast RPF route. Do not debug PIM join state first.
+
+#7 PIM Sparse Mode, Packet by Packet
+	1. The RP is configured (static) or elected (Bootstrap Router, which is standard, or Cisco Auto-RP). Every router must agree which RP owns which groups.
+	2. A host sends an IGMP report for G. The DR on that LAN sends a PIM Join (*, G) toward the RP. Each hop installs (*, G) and the shared tree grows from the RP down to the receiver.
+	3. A source sends to G. The DR on the source LAN does not yet have a tree, so it encapsulates the data in a unicast PIM Register and sends it to the RP.
+	4. The RP unwraps the Register. If the shared tree has receivers, it forwards the packet down (*, G). It also sends a PIM Join (S, G) toward the source so native multicast can flow from S to the RP.
+	5. When that source tree reaches the RP, the RP sends Register-Stop. The source DR stops encapsulating and forwards native multicast.
+	6. The last-hop router sees S in the data and joins (S, G) toward the source. Traffic then follows the source tree, which is shorter. The router prunes S from the shared tree so it does not get two copies.
+	7. Cisco switches to the source tree on the first packet by default. A threshold can keep low-rate groups on the shared tree.
+	8. When the last member leaves, IGMP tells the DR, the DR prunes toward the RP or the source, and state times out if nobody else is joined.
+
+#8 What else gets asked
+	- IGMP is host-to-router on one LAN. PIM is router-to-router across the network. A join does nothing until both are working.
+	- Two routers on one LAN can both decide to forward the same (S, G). PIM Assert picks one: the one with the better unicast route toward the source, then the higher IP.
+	- An RP that nobody can reach means sparse mode is silent. Sources register into a hole, and receivers join toward a hole.
+	- Dense mode flooding a high-rate stream is a network outage. Do not enable it on a large routed network.
+	- The multicast routing table (mroute) is not the unicast routing table. Unicast answers "how do I reach the source." The mroute answers "which interfaces get a copy."
+	- Commands people expect: show ip igmp groups, show ip pim neighbor, show ip pim rp mapping, show ip mroute, show ip rpf.

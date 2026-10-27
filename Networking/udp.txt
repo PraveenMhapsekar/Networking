@@ -1,0 +1,34 @@
+#1 What UDP is
+	- A datagram service on top of IP, RFC 768. One send is one packet. The receiver gets the datagram or it gets nothing. There is no handshake, no retransmission, no ordering, and no congestion window.
+	- The application supplies those if it needs them. DNS retries the query. RTP accepts a gap. QUIC builds reliability on top of UDP. TCP is the choice when the byte stream has to be complete and in order.
+	- Protocol number 17. The header is 8 bytes, which is why tunnels and real-time protocols prefer it. There is little to pay per packet, and a lost packet does not stall the ones behind it.
+
+#2 Header
+	| Source port (16) | Destination port (16) |
+	| Length (16) | Checksum (16) |
+
+	- Length is the UDP header plus the data, in bytes. The minimum is 8. It is not the IP total length. IP total length is the IP header plus this UDP datagram.
+	- Ports work as in TCP. A listener binds a destination port. The client uses an ephemeral source port. There is no connection state, so the tuple identifies a flow only for as long as both ends remember it.
+	- Checksum covers the UDP header, the data, and a pseudo-header: both IP addresses, a zero byte, protocol 17, and the UDP length. Same one's complement sum as TCP.
+	- In IPv4 the checksum is optional. A value of zero means the sender did not compute one. In IPv6 it is required. A computed sum of zero is stored as ffff, and a received checksum of zero is discarded. That rule is in the IPv6 notes because it is an IPv6 rule about a UDP field.
+	- A NAT that changes an address or a port updates this checksum. The incremental update is the same one used for TCP.
+
+#3 What people run on it
+	- DNS queries, DHCP, NTP, SNMP, syslog, RTP for voice, VXLAN on UDP 4789, and QUIC.
+	- The datagram boundary is preserved. A 200-byte send arrives as a 200-byte recv, or not at all. TCP would be allowed to deliver those bytes in two reads.
+	- There is no port-unreachable inside UDP itself. A host that receives UDP for a port with nothing bound sends ICMP Port Unreachable, type 3 code 3. Many hosts and firewalls send nothing.
+	- A large UDP datagram is fragmented by IP when it exceeds the MTU. Losing one fragment loses the whole datagram. That is a reason DNS moved large answers to TCP, and a reason a tunnel that wraps a 1500-byte frame in UDP has to raise the underlay MTU or lower the inner one.
+
+#4 Interview questions
+	- How big is the UDP header, and what is the length field?
+		8 bytes: source port, destination port, length, checksum. The length counts those 8 bytes plus the payload.
+	- What does the checksum cover, and when may it be zero?
+		The header, the payload, and the pseudo-header of both IP addresses. Zero is legal in IPv4 and means "not computed." In IPv6 the checksum is mandatory, and a result of zero is sent as ffff.
+	- What does UDP refuse to do that TCP does?
+		It does not retransmit, reorder, or slow down for congestion. The application sees one datagram at a time, with the boundary intact.
+	- Why do VXLAN, RTP, and DNS queries use UDP?
+		The overhead is 8 bytes, there is no handshake, and one lost packet does not block the next. DNS retries at the application. RTP plays through a gap. VXLAN wants one inner frame in one outer datagram.
+	- A UDP datagram larger than the path MTU is lost even though the ping works. Why?
+		IP fragmented it. One fragment was dropped, so the destination could not reassemble the datagram. Ping fit in a single fragment. The fix is a smaller datagram or a path that carries the large one.
+	- How does a sender learn that nothing is listening?
+		ICMP Port Unreachable, type 3 code 3. If that message is filtered, the sender sees only silence and has to time out.

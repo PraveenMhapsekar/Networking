@@ -1,0 +1,38 @@
+#1 What LACP is
+	- Link Aggregation Control Protocol, IEEE 802.1AX (the work started as 802.3ad). It bundles parallel links between the same two systems into one logical link.
+	- Spanning tree sees one port, so it does not block the extras as loops. Forwarding hashes flows across the members. A single flow stays on one member, so the frames of that flow stay in order.
+	- LACPDUs are slow protocol frames, EtherType 0x8809, sent to the slow-protocols multicast address. They are not forwarded by a bridge. A bundle only forms with the neighbor on the other end of the wire.
+
+#2 How a bundle forms
+	- Each side has a system id: a system priority plus a MAC address. Lower priority value wins when the two sides disagree about which links fit. Default priority is 32768.
+	- Each member has an operational key. Links with the same key, the same speed, and the same duplex can be in the same bundle. A 1 Gbps member does not join a bundle of 10 Gbps members.
+	- Modes. Active sends LACPDUs and is willing to bundle. Passive waits to hear the other side. Active with active works. Active with passive works. Passive with passive never starts, and the links stay independent.
+	- Static, also called "on" or mode on, bundles without any LACPDU. Both ends must be set the same way. There is no check that the peer agrees, so a miswire can loop or black-hole. LACP is the mode that catches that.
+	- Timers. Slow sends a LACPDU every 30 seconds. Fast sends one every second. The timeout is three intervals. Fast detects a dead member in a few seconds. Both ends should agree. A member that stops sending is removed from the bundle and the traffic is rehashed onto the survivors.
+	- If you cable more members than the bundle allows, the extras are standby. Port priority, lower value better, picks which ones are active. When an active member fails, a standby takes its place.
+
+#3 Hashing
+	- The hash is usually a function of source and destination MAC, or of the IP addresses, or of the IP addresses and the L4 ports. The platform has a fixed set of choices.
+	- One TCP connection hashes to one link. Four 10 Gbps members do not give one flow 40 Gbps. They give many flows a place to spread. A single elephant flow pins one member and leaves the others idle.
+	- Adding or removing a member changes the hash for some flows. Those flows move. In-order delivery holds only while the set of members is stable.
+	- The logical interface is what routing and spanning tree use. The physical members do not each run OSPF. Shutting the logical interface shuts the bundle.
+
+#4 Multi-chassis
+	- LACP by itself is between two systems. A pair of switches that want to look like one system to a downstream host run multi-chassis LAG: vPC, MLAG, or stacking. They present one LACP system id.
+	- The downstream host speaks ordinary LACP. The two upstream switches have a peer link and a rule for which of them forwards a given flow. A split between the peers is a dual-active risk, and each vendor's implementation has its own protection. The protocol on the wire toward the host is still LACP.
+
+#5 Interview questions
+	- What does LACP buy you that two independent links do not?
+		One logical link. Spanning tree does not block one of them. A failure of one member leaves the bundle up, and flows move to the remaining members.
+	- Which mode combinations form a bundle?
+		Active with active, and active with passive. Passive with passive never sends a LACPDU, so nothing forms. Static "on" forms a bundle with no negotiation at all.
+	- Why does one TCP transfer not fill a four-member bundle?
+		The hash places a flow on one member so frames stay ordered. The bundle spreads many flows. It does not spray one flow across members.
+	- What has to match for two links to land in the same bundle?
+		The peer system, the key, the speed, and the duplex. A slower link stays out. LACP also has to be running on both ends, unless both ends are forced on.
+	- Slow versus fast?
+		A LACPDU every 30 seconds, or every second. Failure detection is three missed packets. Fast costs a little control traffic and notices a dead link sooner. A pulled fiber is noticed by the interface going down either way.
+	- What goes wrong with mode on?
+		Nothing checks the partner. A cable into the wrong switch still gets bundled into the logical port, or it loops, because no LACPDU failed.
+	- How is a multi-chassis LAG different from LACP?
+		Toward the host it is LACP with one system id. Between the two upstream switches it is a vendor mechanism that keeps them from both forwarding the same flow, plus a peer link. LACP itself has no notion of two boxes.

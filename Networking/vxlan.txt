@@ -1,0 +1,99 @@
+#1 What VXLAN is
+	- Virtual Extensible LAN, RFC 7348. An overlay: a Layer 2 frame is carried inside a UDP packet across a routed network.
+	- The underlay is ordinary IP. OSPF, IS-IS, or BGP only has to deliver packets between VTEP addresses. It does not learn tenant MAC addresses.
+	- The overlay is the tenant network. Each segment has a VNI. Hosts still send normal Ethernet. Only the VTEPs encapsulate.
+	- A VLAN id is 12 bits, so 4094 segments. A VNI is 24 bits, so about 16 million. That is why VXLAN replaced "stretch this VLAN across the data center."
+	- VXLAN is the data plane. By itself it is flood-and-learn. EVPN (BGP) is the control plane you actually deploy. Do not describe flood-and-learn as the modern design.
+
+#2 Header format
+	Outer Ethernet, outer IP, UDP, an 8-byte VXLAN header, then the original Ethernet frame including its own MAC header. The inner frame is not stripped to IP. This is MAC-in-UDP.
+
+	UDP destination port is 4789 (IANA). Some older stacks still send 8472. Both ends must agree.
+	The UDP source port is a hash of the inner headers. The underlay ECMP and a LAG then see different flows instead of one fat flow between two VTEPs.
+
+	The VXLAN header is 8 bytes:
+
+	 0                   1                   2                   3
+	 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|R|R|R|R|I|R|R|R|                 Reserved                      |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|           VXLAN Network Identifier (VNI)      |   Reserved    |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+	- Flags, 8 bits. The I bit must be 1, meaning the VNI field is valid. The other flag bits are reserved.
+	- VNI, 24 bits. The tenant segment. It plays the role a VLAN id played, but it is not a VLAN id and it is not written into the inner frame.
+	- Two reserved regions pad the header out to 64 bits.
+	- Overhead is 50 bytes with no outer VLAN tag: 14 outer Ethernet, 20 outer IPv4, 8 UDP, 8 VXLAN. An outer 802.1Q tag makes it 54. The underlay MTU must clear the inner frame plus that overhead. Jumbo frames (9000 or more) are the normal fix. A silent drop of large packets is an MTU miss, not a VNI miss.
+
+#3 VTEP
+	- VXLAN Tunnel Endpoint. The switch or host that encapsulates and decapsulates. Also called an NVE.
+	- The VTEP address is a loopback, not a physical link. The underlay must route to that loopback. If the loopback is down in the IGP, the overlay is down.
+	- Ingress VTEP: looks up the destination MAC or IP, picks the remote VTEP, pushes the outer headers, sets the VNI.
+	- Egress VTEP: checks that it owns the destination VTEP address, reads the VNI, strips the outer headers, and delivers the inner frame into that segment.
+	- A VTEP does not have to be a switch. A hypervisor or a NIC can be one. The frame format is the same.
+
+#4 Flood and learn versus EVPN
+	- Flood and learn is the original data plane. Unknown unicast, broadcast, and multicast (BUM) are flooded to every other VTEP in the VNI, either by an underlay multicast group or by head-end replication. Source MACs are learned from the frames that come back. There is no list of hosts. This scales like a giant VLAN.
+	- EVPN replaces that learning. MP-BGP advertises MAC and IP bindings. A VTEP that needs a destination already knows the remote VTEP and the VNI. BUM is still required for real broadcasts and for ARP until suppression is on, but unknown unicast is not flooded once the MAC is advertised.
+	- Head-end replication: the ingress VTEP sends one unicast copy to each remote VTEP. No PIM in the underlay. EVPN type-3 routes are the membership list.
+	- Underlay multicast: one multicast group carries BUM for a VNI. The underlay must run PIM. Fewer copies on the first hop, more protocol in the underlay.
+
+#5 EVPN route types worth naming
+	- Type 2, MAC/IP advertisement. "This MAC, and usually this IP, is at this VTEP, in this L2 VNI." This is the host route. ARP suppression reads it.
+	- Type 3, inclusive multicast (IMET). "I am a member of this VNI, send me BUM." This builds the head-end replication list.
+	- Type 5, IP prefix. A route to a subnet or an external prefix, associated with an L3 VNI. Used for routing out of the fabric and between VRFs.
+	- Type 1, Ethernet auto-discovery. Multihoming: aliasing and mass withdraw when a link to a dual-homed host fails.
+	- Type 4, Ethernet segment. The VTEPs attached to the same multihomed host elect a designated forwarder so BUM is not delivered twice.
+	- Route distinguisher and route target work here the same way they do in an MPLS L3VPN. RD makes a route unique. RT decides which VRF or VNI imports it.
+
+#6 L2 VNI, L3 VNI, and the anycast gateway
+	- An L2 VNI is one bridge domain, one subnet. Bridging stays inside it.
+	- An L3 VNI is one VRF. Routed traffic between two subnets in that VRF crosses the fabric on the L3 VNI, not on either subnet's L2 VNI.
+	- Asymmetric IRB: the ingress VTEP routes into the destination subnet and then bridges across an L2 VNI. Every VTEP must own every subnet's VLAN and SVI. Do not build this.
+	- Symmetric IRB: both VTEPs route. The packet enters on a local L2 VNI, crosses the fabric on the L3 VNI, and the egress VTEP routes it into the destination L2 VNI. A leaf only configures the subnets that have local hosts, plus the L3 VNI for the VRF. This is the design to describe.
+	- Anycast gateway: every leaf runs the same gateway IP and the same gateway MAC for that subnet. The host ARPs and reaches its own leaf. There is no HSRP across the fabric, and a VM move does not change the gateway.
+	- ARP suppression: the leaf answers ARP from the type-2 route instead of flooding the ARP request across the fabric.
+
+#7 A packet, end to end
+	1. The host sends a normal Ethernet frame to its gateway MAC, or to a local neighbor.
+	2. The local VTEP already has a type-2 route for a remote destination: inner MAC, remote VTEP IP, L2 VNI. For a routed destination it rewrites onto the L3 VNI and the egress VTEP's router MAC.
+	3. It encapsulates. Outer source is the local VTEP loopback. Outer destination is the remote VTEP. UDP source is the entropy hash. UDP destination is 4789. VNI is set. I bit is 1.
+	4. The underlay routes on the outer IP only. ECMP uses the UDP source port. P routers do not know the VNI.
+	5. The egress VTEP accepts the packet because the outer destination is itself, checks the VNI, strips the outer headers, and forwards the inner frame out the local port. If it was an L3 VNI packet, it routes first, then bridges into the local subnet.
+
+#8 VXLAN versus VLAN versus MPLS
+	- VLAN: one broadcast domain on a switched fabric, 12-bit id, STP decides forwarding. Extending it between buildings extends the failure domain.
+	- VXLAN: the id is 24 bits, and the transport is IP, so the failure domain of STP stops at the leaf. The cost is the encapsulation and a control plane.
+	- MPLS: also an encapsulation with a stack, but the core forwards on labels and usually has no UDP. EVPN can use either data plane. The route types in section 5 stay the same. What changes is the tunnel: a label stack, or a VXLAN header.
+	- Use VXLAN when the underlay is an IP fabric that already ECMP-routes, which is a leaf-spine data center. Use MPLS when the core is already an MPLS core, which is a WAN or a carrier VPN.
+
+#9 Interview questions
+	- What problem does the VNI solve that a VLAN id does not?
+		A VLAN id is 12 bits. A VNI is 24 bits, and it is carried in UDP so the segment can cross a routed network instead of a single STP domain.
+	- Where is the VNI, and how long is it?
+		24 bits, in an 8-byte header between UDP and the original Ethernet frame. The I bit must be set.
+	- What is a VTEP?
+		The device that encapsulates and decapsulates. Its address is a loopback the underlay knows how to route.
+	- Why is the UDP source port a hash?
+		So ECMP and LAGs in the underlay spread flows. If every packet used the same source port, one link would carry the whole VTEP-to-VTEP load.
+	- What is the UDP destination port?
+		4789. An older implementation may still use 8472. A mismatch looks like a black hole with the underlay fully up.
+	- Why do large packets die while pings work?
+		The overlay adds 50 bytes, 54 with an outer tag. Ping fits. A full-size inner frame does not, unless the underlay MTU is raised.
+	- Flood-and-learn versus EVPN?
+		Flood-and-learn learns remote MACs from flooded traffic. EVPN advertises them in BGP, so the ingress VTEP already knows the remote VTEP. EVPN is the control plane. VXLAN is the encapsulation.
+	- Which BGP route says where a host is?
+		EVPN type 2. It carries the MAC, the IP, the VTEP, and the L2 VNI.
+	- What is an L3 VNI for?
+		Routed traffic between subnets in one VRF. Symmetric IRB sends that traffic on the L3 VNI. The L2 VNI is only the local subnet.
+	- Asymmetric versus symmetric IRB?
+		Asymmetric routes only on the ingress VTEP, so every leaf must hold every subnet. Symmetric routes on both ends and crosses the fabric on the L3 VNI. Deploy symmetric.
+	- What is the anycast gateway?
+		The same gateway IP and MAC on every leaf for a subnet. The host uses its local leaf. You do not run HSRP across VTEPs.
+	- A remote host is up and the IGP is up, but the overlay does not forward. What do you check?
+		That both VTEP loopbacks are reachable, that UDP 4789 is not filtered, that both ends use the same VNI, and that a type-2 route exists for the destination. Then check MTU.
+	- How is this different from MPLS L3VPN?
+		Both separate tenants with an identifier and a route target. MPLS uses a label stack and a label-switching core. VXLAN uses a VNI inside UDP and any IP core. EVPN can be the control plane for both.
+	- Why is stretching a VLAN across VXLAN a migration tool and not the end state?
+		It keeps one broadcast domain and one failure domain. Symmetric IRB plus the anycast gateway lets you route at the first hop instead.

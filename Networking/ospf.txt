@@ -1,0 +1,57 @@
+#1 What OSPF is
+	- Open Shortest Path First, OSPFv2 for IPv4 (RFC 2328) and OSPFv3 for IPv6 (RFC 5340). A link-state IGP. Every router describes its own links, the descriptions are flooded, and each router runs Dijkstra on the same database.
+	- It rides directly on IP as protocol 89. There is no TCP and no UDP port. Neighbors are discovered with multicast: 224.0.0.5 for every OSPF router, 224.0.0.6 for the designated router. IPv6 uses FF02::5 and FF02::6.
+	- Inside one area it is link-state. Between areas the ABR advertises prefixes, so that part behaves like distance-vector. A flap inside an area is SPF in that area. Other areas see a changed prefix cost, not the failed link.
+
+#2 Neighbors
+	- A router ID is a 32-bit number, written like an address. It is configured, or taken from the highest loopback, or from the highest interface address. It has to be unique and stable. It does not have to be a prefix the router advertises.
+	- Hello and dead timers must match, along with the area id, the subnet, the stub flag, and the authentication. A mismatch stays in Down. Default hello is 10 seconds on a broadcast link and the dead interval is 40.
+	- States: Down, Init, 2-Way, ExStart, Exchange, Loading, Full.
+		- Init means a hello arrived. 2-Way means each side has seen itself in the other's hello. This is bidirectional.
+		- ExStart and Exchange trade database descriptions. Loading pulls the LSAs that are missing. Full means the databases match.
+	- On a broadcast link, two neighbors that are neither the DR nor the BDR stay at 2-Way with each other. They go Full only with the DR and the BDR. That is normal, not a failure.
+	- Network types that matter: broadcast (a LAN, elects a DR), point-to-point (no DR, the usual choice for a /31 between routers), and non-broadcast, which needs the neighbor configured by hand.
+
+#3 DR and BDR
+	- On a LAN, a full mesh of adjacencies would be n squared. The designated router is the hub. Everyone exchanges the database with the DR. The BDR is already Full with everyone so a DR failure has a successor.
+	- Election: highest priority, then highest router ID. Priority 0 means "never be DR." Default priority is 1. The DR does not step down when a higher priority arrives later. It stays until it fails.
+	- The DR originates the type 2 LSA for the LAN. Its address on that LAN is what other routers use as the next hop for destinations reached across that segment.
+
+#4 Areas and LSA types
+	- Area 0 is the backbone. Every other area attaches to it, through an ABR. A virtual link is a tunnel through a non-backbone area when a direct attachment is missing. It is a repair, not a design.
+	- Type 1, router LSA. One per router per area. The router's links. Flooded inside the area.
+	- Type 2, network LSA. Originated by the DR. The list of routers on that LAN.
+	- Type 3, summary LSA. An ABR advertising a prefix from one area into another. The name "summary" does not mean the prefix was aggregated. Aggregation is a separate configuration.
+	- Type 4, ASBR summary. How to reach an ASBR, advertised by the ABR. Routers in other areas need this to know where to send traffic for a type 5.
+	- Type 5, external. Originated by an ASBR that redistributed something into OSPF. Flooded through every normal area. E2 carries the external metric only, and the cost inside OSPF is a tie-break. E1 adds the internal cost to the ASBR, so the path through the network matters. E2 is the default.
+	- Type 7, NSSA external. An external that is allowed to originate inside an NSSA. The ABR translates it to a type 5.
+	- Opaque LSAs, types 9, 10, and 11, carry traffic engineering and segment routing. Type 10 is the area-scoped one those features use.
+	- A stub area blocks type 5 and has no ASBR. The ABR injects a default route. A totally stubby area also blocks type 3, leaving the default. An NSSA is a stub that still has an ASBR, using type 7. A totally NSSA blocks type 3 as well.
+
+#5 Cost and packets
+	- Cost of an interface is reference bandwidth divided by the interface bandwidth. Cisco's default reference is 100 Mbps, so a 100 Mbps link is cost 1 and every faster link is also cost 1 until the reference is raised. The path cost is the sum. Lower wins.
+	- Packets: Hello (1), Database Description (2), Link State Request (3), Link State Update (4), Link State Ack (5). Flooding is reliable. An unacknowledged LSA is resent.
+	- A passive interface advertises the subnet and sends no hellos. User LANs are made passive so a host cannot form an adjacency by speaking OSPF.
+	- Authentication is null, plaintext, or a hash. Both sides must agree. OSPFv3 moved authentication out of the OSPF packet and into the IP layer, and later added an authentication trailer.
+
+#6 Interview questions
+	- What does OSPF run on top of?
+		IP protocol 89. Neighbors on a LAN are found at 224.0.0.5. There is no TCP session to fail.
+	- Name the neighbor states up to Full.
+		Down, Init, 2-Way, ExStart, Exchange, Loading, Full. 2-Way means the hellos agree. Full means the databases agree.
+	- Why is 2-Way a healthy state between two routers on a LAN?
+		Neither is the DR or the BDR. They both talk to the DR. A stuck Loading or ExStart is the failure. A stuck 2-Way between a router and the DR is the failure.
+	- How is the DR chosen, and does a better router take over?
+		Highest priority, then highest router ID. Priority 0 cannot win. The winner keeps the role until it leaves. A later router with a higher priority waits.
+	- Which LSA describes a prefix from another area?
+		Type 3, from the ABR. Type 1 and 2 stay inside the area. Type 5 is an external from an ASBR. Type 4 tells the rest of the network where that ASBR is.
+	- What is the difference between E1 and E2?
+		E2 uses the redistributed metric alone, and the cost to the ASBR breaks a tie. E1 adds the cost to the ASBR, so a far ASBR looks far. The default external is E2.
+	- What does a stub area refuse?
+		Type 5 externals. The ABR gives it a default. A totally stubby area also refuses the type 3 prefixes. An NSSA allows externals that originated inside it, as type 7.
+	- Two neighbors stay Down and the link is up. What has to match?
+		Area, hello and dead timers, subnet and mask, stub flag, and authentication. Then check that both sides are actually sending hellos and that the interface is not passive.
+	- Why do all the gigabit links show cost 1?
+		The reference bandwidth is still 100 Mbps. Raise it, on every router, so a 10 Gbps link costs less than a 1 Gbps link.
+	- OSPF versus the BGP already in these notes?
+		OSPF builds a shortest path inside one AS and picks the low cost. BGP carries policy between ASes and picks with local preference and AS path. OSPF next hop is a neighbor that shares the link. BGP next hop can be several hops away.

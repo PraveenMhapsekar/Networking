@@ -1,0 +1,101 @@
+#1 What a VLAN is
+	- A VLAN is a broadcast domain on a switch. Ports in the same VLAN share floods, unknown unicasts, and broadcasts. Ports in different VLANs do not.
+	- A VLAN is not a security boundary by itself. Hosts in two VLANs cannot talk until something routes between them, but that is a configuration choice, not encryption.
+	- Inter-VLAN traffic needs a Layer 3 hop: a router, a router on a stick, or a switched virtual interface (SVI) on a Layer 3 switch.
+	- Each switch port is its own collision domain. The VLAN is the broadcast domain. Those are different sentences. Interviews mix them.
+
+#2 802.1Q tag format
+	The tag is 4 bytes inserted after the source MAC and before the EtherType of the payload. A tagged frame is 1522 bytes instead of 1518. Ethertype of the tag itself is 0x8100.
+
+	 0                   1
+	 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	|          TPID (0x8100)        |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	| PCP |D|          VID          |
+	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+	- TPID, 16 bits. 0x8100 means "an 802.1Q tag follows." The real EtherType of the payload (0x0800 for IPv4, and so on) comes after the tag.
+	- PCP, 3 bits. Priority code point, also called 802.1p. 0 through 7. This is the Layer 2 QoS mark. It is not the IP DSCP.
+	- DEI, 1 bit. Drop eligible indicator. Used to be called CFI. If set, this frame is the one to drop first under congestion.
+	- VID, 12 bits. The VLAN id. 0 and 4095 are reserved, so the usable range is 1 through 4094.
+	- VLAN 0 means "priority tag only." The frame carries PCP and no VLAN id. Switches treat it as the native or port VLAN.
+	- On Cisco, 1 is the default VLAN and the default native VLAN. 1002 through 1005 are reserved for old FDDI and Token Ring. 1006 through 4094 are extended VLANs and need VTP transparent or off on older code.
+	- A host on an access port usually never sees this tag. The switch adds it on ingress and strips it on egress.
+
+#3 Access port and trunk
+	- Access port: one VLAN. Frames toward the host are untagged. The configured access VLAN is what the switch writes on ingress.
+	- Trunk: many VLANs on one link. Each frame is tagged with its VID, except the native VLAN.
+	- Native VLAN: the VLAN that crosses the trunk untagged. Both ends must agree. A mismatch silently merges two broadcast domains. Cisco default is VLAN 1. Move the native VLAN to an unused id, and tag it (vlan dot1q tag native) so nothing rides untagged.
+	- Allowed list: a trunk does not have to carry every VLAN. Prune it to the VLANs that belong on that link.
+	- ISL was Cisco's old trunk encapsulation. It wrapped the whole frame. It is obsolete. 802.1Q inserts the 4-byte tag. If someone says "trunk," they mean 802.1Q.
+	- DTP (Dynamic Trunking Protocol) negotiates access versus trunk. Leave it off. Set the port to access or trunk by hand. An attacker who speaks DTP can turn their port into a trunk.
+
+#4 How a switch forwards inside a VLAN
+	- Learning: source MAC and ingress port, stored per VLAN. The same MAC in two VLANs is two entries.
+	- Known unicast: forwarded only out the port where that MAC was learned, inside that VLAN.
+	- Unknown unicast, broadcast, and multicast with no IGMP snooping: flooded to every other port in the VLAN, and to trunks that allow the VLAN. Not to other VLANs.
+	- A frame is never sent back out the port it arrived on.
+	- IGMP snooping stops the switch from flooding IP multicast to every port in the VLAN. Without it, multicast is a broadcast inside the VLAN.
+
+#5 Inter-VLAN routing
+	- Router on a stick: one physical link, configured as a trunk. The router has a subinterface per VLAN, each with an IP in that VLAN's subnet. The switch port is a trunk.
+	- SVI: interface Vlan10 on a multilayer switch. The switch routes between SVIs. The ports stay access or trunk ports. This is the normal design.
+	- Routed port: no switchport. The port is an IP interface with no VLAN tag. It is not a member of a VLAN.
+	- Each VLAN is one subnet in a sane design. Mixing two subnets in one VLAN works badly. One subnet stretched across two VLANs does not get routed. It just breaks ARP.
+
+#6 Voice VLAN
+	- An access port can carry a data VLAN untagged and a voice VLAN tagged.
+	- CDP or LLDP tells the phone which VLAN id to tag. The PC plugged into the phone stays untagged on the data VLAN.
+	- The phone is a tiny trunk. The switch still shows the port as an access port with a voice VLAN.
+
+#7 VLAN hopping
+	- Switch spoofing. The attacker sends DTP and becomes a trunk, then sends tagged frames for any VLAN. Fix: disable DTP, and do not leave ports as dynamic auto or dynamic desirable.
+	- Double tagging. The attacker is on the native VLAN and sends two tags. The first switch strips the outer tag (the native VLAN) and forwards the inner tag onto the trunk. The next switch delivers the frame into the victim VLAN. It is one direction only. The attacker does not get the replies.
+	- Fix the double-tag attack by not putting hosts on the native VLAN, by tagging the native VLAN, and by not using VLAN 1 for users.
+
+#8 VTP
+	- VLAN Trunking Protocol. Cisco. It copies the VLAN database from a server to clients in the same domain.
+	- Modes: server, client, transparent, off. Transparent forwards advertisements but does not install them. Off does not forward them either.
+	- The revision number is the trap. A switch with a higher revision overwrites the VLAN database of the domain, even if its database is empty. Wipe a used switch, or set it to transparent, before you connect it.
+	- VTP pruning stops a trunk from carrying a VLAN that has no ports downstream. Manual allowed lists are easier to reason about.
+
+#9 QinQ
+	- 802.1ad. The provider adds an outer tag (S-tag, TPID often 0x88a8) and leaves the customer's 802.1Q tag (C-tag, 0x8100) inside.
+	- The customer keeps their own VLAN ids. The provider only switches on the outer tag.
+	- Two tags means 8 extra bytes. The frame can be 1526 bytes. The provider switches must allow that.
+
+#10 STP, only the part that touches VLANs
+	- One Spanning Tree (CST, 802.1Q) builds a single tree for every VLAN. One blocked link blocks all VLANs.
+	- PVST and Rapid PVST build one tree per VLAN, so different VLANs can block different links. This is Cisco, and it is the usual campus default.
+	- MST (802.1s) maps groups of VLANs onto a few instances. You get load sharing without a tree per VLAN.
+
+#11 Interview questions
+	- How big is an 802.1Q tag, and where does it sit?
+		4 bytes, after the source MAC. TPID 0x8100, then 3 bits of priority, 1 drop-eligible bit, and 12 bits of VLAN id.
+	- How many VLANs can 12 bits name?
+		4096 values. 0 and 4095 are reserved, so 1 through 4094 are usable. Cisco also reserves 1002 through 1005.
+	- What does an access port send to a PC?
+		An untagged frame. The switch applies the access VLAN internally. The PC does not see a tag.
+	- What is the native VLAN?
+		The VLAN that crosses a trunk with no tag. Both ends must match. A mismatch merges two VLANs.
+	- Why is VLAN 1 a bad native VLAN and a bad user VLAN?
+		It is the default, it carries control traffic (CDP, VTP, PAgP, and so on), and it is the VLAN an unused port sits in. Move users off it, and do not leave it as the native VLAN.
+	- What is VLAN hopping by double tagging?
+		A frame with two tags, sent from the native VLAN. The first switch removes the outer tag and the inner tag selects the victim VLAN on the next switch. Tag the native VLAN and keep hosts out of it.
+	- What does DTP do, and why do you turn it off?
+		It negotiates whether a port is a trunk. An attacker can negotiate a trunk and then inject any VLAN. Set access or trunk explicitly.
+	- Access port versus trunk versus routed port?
+		Access is one untagged VLAN. Trunk is many tagged VLANs plus one native VLAN. A routed port has an IP address and no VLAN.
+	- How does a packet get from VLAN 10 to VLAN 20?
+		A router or an SVI. The switch will not bridge it. Each VLAN needs its own subnet and its own gateway.
+	- What is an SVI?
+		A virtual interface for a VLAN, such as interface Vlan10, with an IP in that subnet. The multilayer switch routes between SVIs.
+	- Why did a new switch erase the VLAN database?
+		VTP. Its revision number was higher than the server's. Take a switch to transparent or off, and delete vlan.dat, before it joins the network.
+	- What is QinQ for?
+		A provider carries many customers who all use VLAN 10. The provider's outer tag keeps them apart. The customer's tag is untouched.
+	- Does a VLAN stop a host from sniffing another VLAN?
+		On the switch, yes, floods stay inside the VLAN. It does not stop a trunk port, a mis-set native VLAN, or a routed path. It is segmentation, not encryption.
+	- Voice VLAN: what is tagged?
+		The phone tags the voice VLAN. The PC behind the phone sends untagged data frames. The switch accepts both on one access port.

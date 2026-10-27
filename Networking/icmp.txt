@@ -1,0 +1,47 @@
+#1 What ICMP is
+	- Internet Control Message Protocol, RFC 792. It rides inside IP as protocol 1. It reports errors and it carries the queries ping and traceroute depend on.
+	- An ICMP error is not a retransmission and it is not a routing protocol. The sender may react. Forwarding of other packets continues.
+	- ICMPv6 is next header 58 and is a different packet. Neighbor Discovery, Packet Too Big, and the IPv6 echo types live in the IPv6 notes. This page is ICMP for IPv4, with the matching v6 type named where the interview asks for both.
+
+#2 Message format
+	| Type (8) | Code (8) | Checksum (16) | Type-specific (32) |
+	| The rest depends on the type |
+
+	- The checksum covers the ICMP message. It is the same one's complement sum used by the IP header.
+	- An error message carries the original IP header and the first 8 bytes of the original payload, which is enough to see the TCP or UDP ports. Hosts often include more, up to the point the ICMP datagram reaches 576 bytes.
+	- A router does not generate an ICMP error about an ICMP error. It does not generate one for a broadcast or a multicast packet, or for any fragment except the first. That stops an error from turning into a storm.
+
+#3 Types and codes
+	- Echo Request is type 8. Echo Reply is type 0. Identifier and sequence number let the sender match the reply to the probe. This is ping.
+	- Destination Unreachable is type 3.
+		- Code 0, network unreachable. Code 1, host unreachable. Code 2, protocol unreachable. Code 3, port unreachable.
+		- Code 4, fragmentation needed and DF set. The next-hop MTU is carried in the type-specific field. This is Path MTU Discovery. A filter that drops it creates a black hole for large packets.
+		- Code 13, communication administratively prohibited. An ACL dropped the packet and was configured to say so. Codes 9 and 10 are the older network and host versions of that idea.
+	- Redirect is type 5. A router tells a host that a better next hop is on the same link. Hosts that accept redirects can have their gateway changed by anyone who can send the packet. On a router, sending redirects is often turned off.
+	- Time Exceeded is type 11. Code 0 means the TTL hit zero in transit. Code 1 means fragment reassembly timed out. Code 0 is traceroute.
+	- Parameter Problem is type 12. Something in the header made no sense, and the pointer says which byte.
+
+#4 Ping and traceroute
+	- Ping sends an echo request and waits for an echo reply. A missing reply is a drop, a filter, or a host that refuses echo. It is not proof the path is down. Many networks filter echo and still forward traffic.
+	- Linux traceroute sends UDP to a high port with TTL 1, then 2, then 3. Each router that decrements the TTL to zero returns Time Exceeded, source address equal to the router that dropped it. The destination returns Port Unreachable, which is how traceroute knows it arrived.
+	- Windows tracert sends ICMP echo with an increasing TTL. The destination answers with echo reply. The hops in the middle still answer with Time Exceeded.
+	- A hop that shows stars may be a router that forwards traffic and suppresses ICMP. The path can be fine. MPLS pipe mode hides core hops for the same reason: the TTL the customer sees never hits zero in the core. That mode is in the MPLS notes.
+	- The ICMP message comes from the incoming interface of the router that dropped the packet, or from the address the router chooses as the source. That address must be reachable from the sender or the report itself is lost.
+
+#5 Interview questions
+	- What IP protocol number is ICMP, and what does an error message contain?
+		Protocol 1. The ICMP header, then the original IP header and at least the first 8 bytes of the original payload, so the ports are visible.
+	- Which types are ping?
+		Echo Request is 8. Echo Reply is 0. The identifier and the sequence match a reply to a probe.
+	- Which message does traceroute depend on?
+		Time Exceeded, type 11 code 0, sent by the router that decremented the TTL to zero. The destination is recognized by Port Unreachable (UDP probes) or by an echo reply (ICMP probes).
+	- What is type 3 code 4?
+		Fragmentation needed and DF set. The router includes the MTU it could accept. The sender reduces the packet. If this message is filtered, small pings work and full-size transfers hang.
+	- What is type 3 code 3 versus code 13?
+		Code 3 is port unreachable: nothing is listening. Code 13 is administratively prohibited: an ACL dropped it.
+	- Why will a router refuse to send an ICMP error about a broadcast?
+		The original packet was delivered to many hosts. One error from each of them, or an error about an error, multiplies. ICMP errors are generated for unicast, for the first fragment, and never in response to another ICMP error.
+	- A ping fails and the application works. What does that mean?
+		Echo is filtered, or the host does not answer echo. Ping is one message type. It is not the forwarding path.
+	- What is the ICMPv6 counterpart of fragmentation needed?
+		Packet Too Big, type 2. IPv6 routers never fragment, so this message is the only way the source learns the MTU. Echo in v6 is 128 and 129. Time Exceeded is type 3.
